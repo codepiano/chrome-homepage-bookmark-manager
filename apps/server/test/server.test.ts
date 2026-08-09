@@ -20,6 +20,9 @@ test('API enforces bearer token and records a click', async () => {
   assert.equal((link.json() as {metadataStatus:string}).metadataStatus,'pending');
   assert.equal((link.json() as {title:string}).title,'Manual title');
   assert.equal((link.json() as {description:string}).description,'Manual description');
+  const normalizedUrl=await app.inject({method:'POST',url:`/api/folders/${folderId}/links`,headers,payload:{url:'example.com'}});
+  assert.equal(normalizedUrl.statusCode,201);
+  assert.equal((normalizedUrl.json() as {url:string}).url,'https://example.com');
   const linkId=(link.json() as {id:string}).id;
   const clicked=await app.inject({method:'POST',url:`/api/links/${linkId}/clicks`,headers});
   assert.equal(clicked.statusCode,200);

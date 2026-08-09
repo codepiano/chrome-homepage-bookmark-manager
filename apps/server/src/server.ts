@@ -5,7 +5,12 @@ import { fetchMetadata, MetadataError } from './metadata.js';
 
 const id = z.string().uuid();
 const httpUrl = z.string().url().max(4096).refine(value => /^https?:\/\//i.test(value), 'Only HTTP(S) URLs are accepted');
-const linkUrl = z.string().url().max(4096).refine(value => /^(https?:\/\/|chrome:\/\/)/i.test(value), 'Only HTTP(S) and Chrome internal URLs are accepted');
+function normalizeLinkUrl(value: unknown) {
+  if (typeof value !== 'string') return value;
+  const url = value.trim();
+  return url && !/^[a-z][a-z\d+.-]*:/i.test(url) ? `https://${url}` : url;
+}
+const linkUrl = z.preprocess(normalizeLinkUrl, z.string().url().max(4096).refine(value => /^(https?:\/\/|chrome:\/\/)/i.test(value), 'Only HTTP(S) and Chrome internal URLs are accepted'));
 const nullableText = z.string().max(10_000).nullable();
 const settings = z.object({ theme:z.enum(['system','light','dark']).optional(), layout:z.enum(['grid','list']).optional(), columns:z.number().int().min(1).max(12).optional(), gap:z.number().min(0).max(96).optional(), cardWidth:z.number().min(120).max(800).optional(), centered:z.boolean().optional(), showAddButton:z.boolean().optional(), compact:z.boolean().optional(), fontFamily:z.string().max(200).optional(), textColor:z.string().max(100).nullable().optional(), accentColor:z.string().max(100).nullable().optional(), showDescription:z.boolean().optional(), showClickCount:z.boolean().optional(), showLastVisited:z.boolean().optional() }).strict();
 const uuidParams = z.object({ id });

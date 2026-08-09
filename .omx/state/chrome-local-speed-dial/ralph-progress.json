@@ -1,0 +1,15 @@
+{
+  "mode": "ralph",
+  "active": false,
+  "iteration": 1,
+  "maxIterations": 10,
+  "currentPhase": "cancelled",
+  "completedAt": "2026-08-09T14:26:00Z",
+  "contextSnapshotPath": ".omx/context/chrome-local-speed-dial-20260809T001100Z.md",
+  "visualVerdict": null,
+  "todo": [
+    "Scaffold and implement the server, contracts, extension UI, tests, and documentation",
+    "Run build, lint, typecheck, automated tests, and visual review",
+    "Obtain an architect verification"
+  ]
+}

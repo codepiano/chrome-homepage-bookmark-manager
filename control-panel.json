@@ -1,0 +1,24 @@
+{
+  "id": "chrome-local-speed-dial",
+  "name": "Chrome 主页书签管理",
+  "workingDirectory": ".",
+  "initCommand": "./scripts/init.sh",
+  "installCommand": "./scripts/install.sh",
+  "startCommand": "./scripts/start.sh",
+  "stopCommand": "./scripts/stop.sh",
+  "statusCommand": "./scripts/status.sh",
+  "restartCommand": "./scripts/restart.sh",
+  "uninstallCommand": "./scripts/uninstall.sh",
+  "openHomepageCommand": "./scripts/open-homepage.sh",
+  "notes": "Chrome 新标签页书签库，本地 Fastify API 默认监听 127.0.0.1:3721",
+  "scripts": {
+    "init": "./scripts/init.sh",
+    "install": "./scripts/install.sh",
+    "start": "./scripts/start.sh",
+    "stop": "./scripts/stop.sh",
+    "status": "./scripts/status.sh",
+    "restart": "./scripts/restart.sh",
+    "uninstall": "./scripts/uninstall.sh",
+    "openHomepage": "./scripts/open-homepage.sh"
+  }
+}

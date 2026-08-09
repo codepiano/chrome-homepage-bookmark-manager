@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { Store } from '../src/db.js';
+import { createServer } from '../src/server.js';
+
+test('API enforces bearer token and records a click', async () => {
+  const store=new Store(join(mkdtempSync(join(tmpdir(),'speed-dial-api-test-')), 'bookmarks.sqlite'));
+  const app=createServer({store,token:'test-token'});
+  assert.equal((await app.inject('/health')).statusCode, 200);
+  assert.equal((await app.inject('/api/folders')).statusCode, 401);
+  const headers={authorization:'Bearer test-token'};
+  const folder=await app.inject({method:'POST',url:'/api/folders',headers,payload:{name:'Reading'}});
+  assert.equal(folder.statusCode,201);
+  const folderId=(folder.json() as {id:string}).id;
+  const link=await app.inject({method:'POST',url:`/api/folders/${folderId}/links`,headers,payload:{url:'http://127.0.0.1/metadata',title:'Manual title',description:'Manual description'}});
+  assert.equal(link.statusCode,201);
+  assert.equal((link.json() as {metadataStatus:string}).metadataStatus,'pending');
+  assert.equal((link.json() as {title:string}).title,'Manual title');
+  assert.equal((link.json() as {description:string}).description,'Manual description');
+  const linkId=(link.json() as {id:string}).id;
+  const clicked=await app.inject({method:'POST',url:`/api/links/${linkId}/clicks`,headers});
+  assert.equal(clicked.statusCode,200);
+  assert.equal((clicked.json() as {clickCount:number}).clickCount,1);
+  const internal=await app.inject({method:'POST',url:`/api/folders/${folderId}/links`,headers,payload:{url:'chrome://extensions/',title:'扩展管理'}});
+  assert.equal(internal.statusCode,201);
+  assert.equal((internal.json() as {metadataStatus:string}).metadataStatus,'succeeded');
+  assert.equal((internal.json() as {title:string}).title,'扩展管理');
+  await app.close();
+});

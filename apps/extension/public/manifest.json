@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Local Speed Dial",
+  "version": "0.1.0",
+  "description": "本机 API 驱动的新标签页快速访问。",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "https://*/*", "http://*/*"],
+  "chrome_url_overrides": { "newtab": "newtab.html" }
+}

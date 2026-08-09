@@ -1,0 +1,49 @@
+export type MetadataStatus = 'pending' | 'succeeded' | 'failed';
+
+export interface Folder {
+  id: string;
+  name: string;
+  position: number;
+  linkCount?: number;
+}
+
+export interface Link {
+  id: string;
+  folderId: string;
+  url: string;
+  title: string | null;
+  description: string | null;
+  faviconUrl: string | null;
+  displayName: string | null;
+  metadataStatus: MetadataStatus;
+  metadataError: string | null;
+  position: number;
+  clickCount: number;
+  lastClickedAt: string | null;
+}
+
+export interface Settings {
+  theme: 'system' | 'light' | 'dark';
+  layout: 'grid' | 'list';
+  columns: number;
+  gap: number;
+  cardWidth: number;
+  centered: boolean;
+  showAddButton: boolean;
+  compact: boolean;
+  fontFamily: string;
+  textColor: string | null;
+  accentColor: string;
+  showDescription: boolean;
+  showClickCount: boolean;
+  showLastVisited: boolean;
+}
+
+export const defaultSettings: Settings = {
+  theme: 'system', layout: 'grid', columns: 4, gap: 14, cardWidth: 230,
+  centered: true, showAddButton: true, compact: false, fontFamily: 'system-ui',
+  textColor: null, accentColor: '#4f46e5', showDescription: true,
+  showClickCount: true, showLastVisited: true,
+};
+
+export type LinkDraft = Pick<Link, 'url' | 'title' | 'description' | 'faviconUrl' | 'displayName'>;

@@ -1,0 +1,18 @@
+{
+  "name": "local-speed-dial",
+  "private": true,
+  "packageManager": "pnpm@10.29.2",
+  "scripts": {
+    "build": "pnpm --filter @local-speed-dial/contracts build && pnpm --filter @local-speed-dial/server build && pnpm --filter @local-speed-dial/extension build",
+    "dev:server": "pnpm --filter @local-speed-dial/server dev",
+    "dev:extension": "pnpm --filter @local-speed-dial/extension dev",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "eslint": "^9.39.1",
+    "typescript": "^5.9.3"
+  }
+}

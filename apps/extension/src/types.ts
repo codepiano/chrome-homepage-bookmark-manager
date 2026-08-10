@@ -41,7 +41,7 @@ export interface Settings {
 
 export const defaultSettings: Settings = {
   theme: 'system', layout: 'grid', columns: 4, gap: 14, cardWidth: 230,
-  centered: true, showAddButton: true, compact: false, fontFamily: 'system-ui',
+  centered: false, showAddButton: true, compact: false, fontFamily: 'system-ui',
   textColor: null, accentColor: '#4f46e5', showDescription: true,
   showClickCount: true, showLastVisited: true,
 };

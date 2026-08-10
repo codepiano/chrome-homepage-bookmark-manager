@@ -20,7 +20,13 @@ if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   exit 1
 fi
 
-tmux new-session -d -s "$SESSION_NAME" -c "$PWD" \
+tmux_env=(-e "NODE_USE_ENV_PROXY=1")
+for proxy_var in HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy no_proxy; do
+  proxy_value="${!proxy_var-}"
+  [[ -n "$proxy_value" ]] && tmux_env+=(-e "$proxy_var=$proxy_value")
+done
+
+tmux new-session -d -s "$SESSION_NAME" -c "$PWD" "${tmux_env[@]}" \
   "exec env PORT='$PORT' SPEED_DIAL_DATA_DIR='$DATA_DIR' corepack pnpm --filter @local-speed-dial/server dev >> '$LOG_FILE' 2>&1"
 
 for _ in $(seq 1 30); do

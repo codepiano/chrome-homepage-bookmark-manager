@@ -37,8 +37,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .link-card-open:hover { background: var(--surface-hover); border-color: var(--border-strong); box-shadow: 0 10px 24px rgb(27 44 71 / .14); transform: translateY(-2px); }
 .link-card.dragging { opacity: .55; }
 .links.list .link-card { min-height: 78px; }
-.card-main { display: flex; align-items: flex-start; gap: 11px; min-width: 0; }
-.favicon { flex: 0 0 30px; width: 30px; height: 30px; object-fit: contain; background: #fff; border-radius: 8px; }
+.card-main { display: flex; align-items: flex-start; gap: 9px; min-width: 0; }
+.favicon { flex: 0 0 24px; width: 24px; height: 24px; object-fit: contain; background: #fff; border-radius: 6px; }
 .fallback { display: grid; place-items: center; color: var(--accent); font-weight: 800; background: color-mix(in srgb, var(--accent) 17%, white); }
 .card-copy { display: grid; min-width: 0; gap: 5px; }
 .card-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

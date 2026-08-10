@@ -28,5 +28,5 @@ pnpm lint
 ## 安全边界
 
 - API 只绑定 `127.0.0.1`，除健康检查外都需要 bearer token。
-- 元数据抓取只接受 HTTP(S)，限制重定向、响应大小和超时，并阻止 loopback、私网和 link-local 地址，防止 SSRF。
+- 元数据抓取只接受 HTTP(S)，限制重定向、响应大小和超时，并阻止 loopback、私网和 link-local 地址，防止 SSRF；启动时自动采用系统的 HTTP(S) 代理设置。
 - 未配置或暂时连不上本机服务时，扩展展示连接错误；已展示的链接仍可直接打开。

@@ -24,3 +24,20 @@ test('folders, links, ordering and click aggregates persist in SQLite', () => {
   assert.equal(store.getLink(link.id), undefined);
   store.close();
 });
+
+test('folder domain rules collect existing links and route newly added links', () => {
+  const store = createStore();
+  const inbox = store.createFolder('Inbox');
+  const github = store.createFolder('GitHub');
+  const existing = store.createLink(inbox.id, { url: 'https://api.github.com/repos/openai' })!;
+  const unrelated = store.createLink(inbox.id, { url: 'https://example.com' })!;
+
+  const result = store.updateFolder(github.id, { name: 'GitHub', autoRules: ['*.github.com'] });
+  assert.equal(result?.moved, 1);
+  assert.equal(store.getLink(existing.id)?.folderId, github.id);
+  assert.equal(store.getLink(unrelated.id)?.folderId, inbox.id);
+
+  const added = store.createLink(inbox.id, { url: 'https://github.com/openai' })!;
+  assert.equal(added.folderId, github.id);
+  store.close();
+});

@@ -1,8 +1,10 @@
 export type MetadataStatus = 'pending' | 'succeeded' | 'failed';
+export interface LinkAppearance { accentColor?: string; cardColor?: string; icon?: string; }
 
 export interface Folder {
   id: string;
   name: string;
+  autoRules: string[];
   position: number;
   linkCount?: number;
 }
@@ -17,9 +19,18 @@ export interface Link {
   displayName: string | null;
   metadataStatus: MetadataStatus;
   metadataError: string | null;
+  appearanceOverride: LinkAppearance | null;
   position: number;
   clickCount: number;
   lastClickedAt: string | null;
+}
+
+export interface BrowserHistoryPage {
+  url: string;
+  title: string | null;
+  lastVisitTime: number;
+  visitCount: number;
+  chromeRemovedAt: string | null;
 }
 
 export interface Settings {
@@ -46,4 +57,4 @@ export const defaultSettings: Settings = {
   showClickCount: true, showLastVisited: true,
 };
 
-export type LinkDraft = Pick<Link, 'url' | 'title' | 'description' | 'faviconUrl' | 'displayName'>;
+export type LinkDraft = Pick<Link, 'url' | 'title' | 'description' | 'faviconUrl' | 'displayName' | 'appearanceOverride'>;

@@ -1,4 +1,4 @@
-import type { Folder, Link, LinkDraft, Settings } from './types';
+import type { BrowserHistoryPage, Folder, Link, LinkAppearance, LinkDraft, Settings } from './types';
 
 export interface ConnectionPreferences { apiBaseUrl: string; token: string; }
 export const defaultConnection: ConnectionPreferences = { apiBaseUrl: 'http://127.0.0.1:3721', token: '' };
@@ -47,17 +47,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<{ ok: boolean }>('/health'),
   folders: () => request<Folder[]>('/api/folders'),
-  createFolder: (name: string) => request<Folder>('/api/folders', { method: 'POST', body: JSON.stringify({ name }) }),
-  updateFolder: (id: string, name: string) => request<Folder>(`/api/folders/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+  createFolder: (input: Pick<Folder, 'name' | 'autoRules'>) => request<Folder>('/api/folders', { method: 'POST', body: JSON.stringify(input) }),
+  updateFolder: (id: string, input: Pick<Folder, 'name' | 'autoRules'>) => request<Folder>(`/api/folders/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
   deleteFolder: (id: string) => request<void>(`/api/folders/${id}`, { method: 'DELETE' }),
   reorderFolders: (ids: string[]) => request<void>('/api/folders/reorder', { method: 'POST', body: JSON.stringify({ ids }) }),
   links: (folderId: string) => request<Link[]>(`/api/folders/${folderId}/links`),
-  createLink: (folderId: string, draft: Pick<LinkDraft, 'url' | 'title' | 'description' | 'displayName'>) => request<Link>(`/api/folders/${folderId}/links`, { method: 'POST', body: JSON.stringify(draft) }),
-  updateLink: (id: string, draft: Partial<LinkDraft>) => request<Link>(`/api/links/${id}`, { method: 'PATCH', body: JSON.stringify(draft) }),
+  createLink: (folderId: string, draft: Pick<LinkDraft, 'url' | 'title' | 'description' | 'displayName' | 'appearanceOverride'>) => request<Link>(`/api/folders/${folderId}/links`, { method: 'POST', body: JSON.stringify(draft) }),
+  updateLink: (id: string, draft: Partial<LinkDraft> & { appearanceOverride?: LinkAppearance | null }) => request<Link>(`/api/links/${id}`, { method: 'PATCH', body: JSON.stringify(draft) }),
   deleteLink: (id: string) => request<void>(`/api/links/${id}`, { method: 'DELETE' }),
   reorderLinks: (items: Array<{ id: string; folderId: string }>) => request<void>('/api/links/reorder', { method: 'POST', body: JSON.stringify({ items }) }),
   refreshMetadata: (id: string) => request<Link>(`/api/links/${id}/refresh-metadata`, { method: 'POST' }),
-  click: (id: string) => request<void>(`/api/links/${id}/clicks`, { method: 'POST' }),
+  duplicates: (url: string) => request<Link[]>(`/api/links/duplicates?url=${encodeURIComponent(url)}`),
+  highlights: () => request<{ frequent: Link[]; recent: Link[] }>('/api/highlights'),
+  history: (query = '', cursor?: { time: number; url: string }) => { const params = new URLSearchParams({ query, limit: '50' }); if (cursor) { params.set('cursorTime', String(cursor.time)); params.set('cursorUrl', cursor.url); } return request<{ items: BrowserHistoryPage[]; nextCursor: { time: number; url: string } | null }>(`/api/history?${params}`); },
+  click: (id: string) => request<Link>(`/api/links/${id}/clicks`, { method: 'POST' }),
   settings: () => request<Settings>('/api/settings'),
   updateSettings: (settings: Settings) => request<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }),
 };

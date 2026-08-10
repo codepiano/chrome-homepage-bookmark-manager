@@ -12,8 +12,14 @@ function normalizeLinkUrl(value: unknown) {
 }
 const linkUrl = z.preprocess(normalizeLinkUrl, z.string().url().max(4096).refine(value => /^(https?:\/\/|chrome:\/\/)/i.test(value), 'Only HTTP(S) and Chrome internal URLs are accepted'));
 const nullableText = z.string().max(10_000).nullable();
+const autoRule = z.string().trim().toLowerCase().regex(/^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/, '规则必须是域名，例如 github.com 或 *.github.com');
+const folderInput = z.object({ name: z.string().trim().min(1).max(120), autoRules: z.array(autoRule).max(50).default([]) }).strict();
+const appearanceOverride = z.object({ accentColor:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), cardColor:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), icon:z.string().trim().max(8).optional() }).strict();
 const settings = z.object({ theme:z.enum(['system','light','dark']).optional(), layout:z.enum(['grid','list']).optional(), columns:z.number().int().min(1).max(12).optional(), gap:z.number().min(0).max(96).optional(), cardWidth:z.number().min(120).max(800).optional(), centered:z.boolean().optional(), showAddButton:z.boolean().optional(), compact:z.boolean().optional(), fontFamily:z.string().max(200).optional(), textColor:z.string().max(100).nullable().optional(), accentColor:z.string().max(100).nullable().optional(), showDescription:z.boolean().optional(), showClickCount:z.boolean().optional(), showLastVisited:z.boolean().optional() }).strict();
 const uuidParams = z.object({ id });
+const browserHistoryRecord = z.object({ url:z.string().url().max(4096), title:z.string().max(10_000).nullable(), lastVisitTime:z.number().int().nonnegative(), visitCount:z.number().int().nonnegative(), source:z.enum(['initial','live']) }).strict();
+const browserHistoryRemoval = z.object({ allHistory:z.boolean(), urls:z.array(z.string().url().max(4096)).max(500).optional() }).strict();
+const browserHistoryList = z.object({ query:z.string().trim().max(200).optional(), cursorTime:z.coerce.number().int().nonnegative().optional(), cursorUrl:z.string().url().max(4096).optional(), limit:z.coerce.number().int().min(1).max(100).default(50) }).strict().refine(value => (value.cursorTime !== undefined) === (value.cursorUrl !== undefined), 'cursorTime and cursorUrl must be provided together');
 function parse<T>(schema: z.ZodType<T>, value: unknown): T { return schema.parse(value); }
 function refreshMetadata(store: Store, linkId: string, linkUrl: string) {
   void fetchMetadata(linkUrl)
@@ -45,14 +51,19 @@ export function createServer({ store, token }: ServerOptions) {
   app.get('/api/settings', async () => store.getSettings());
   app.put('/api/settings', async request => store.setSettings(parse(settings, request.body)));
   app.get('/api/folders', async () => store.listFolders());
-  app.post('/api/folders', async (request, reply) => { const body=parse(z.object({ name:z.string().trim().min(1).max(120) }),request.body); return reply.code(201).send(store.createFolder(body.name)); });
-  app.patch('/api/folders/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); const body=parse(z.object({name:z.string().trim().min(1).max(120)}),request.body); const folder=store.updateFolder(id,body.name); return folder ?? notFound(reply); });
+  app.post('/api/folders', async (request, reply) => { const body=parse(folderInput,request.body); return reply.code(201).send(store.createFolder(body.name, body.autoRules)); });
+  app.patch('/api/folders/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); const body=parse(folderInput,request.body); const result=store.updateFolder(id,body); return result ? { ...result.folder, autoCollected: result.moved } : notFound(reply); });
   app.delete('/api/folders/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); return store.deleteFolder(id) ? reply.code(204).send() : notFound(reply); });
   app.post('/api/folders/reorder', async request => store.reorderFolders(parse(z.object({ids:z.array(id)}),request.body).ids));
   app.get('/api/folders/:folderId/links', async (request,reply) => { const {folderId}=parse(z.object({folderId:id}),request.params); return store.getFolder(folderId) ? store.listLinks(folderId) : notFound(reply); });
+  app.get('/api/links/duplicates', async request => { const { url } = parse(z.object({ url: linkUrl }), request.query); return store.findLinksByUrl(url); });
+  app.get('/api/highlights', async () => store.listHighlights());
+  app.post('/api/history/records', async request => store.recordBrowserHistory(parse(z.object({ records:z.array(browserHistoryRecord).min(1).max(100) }).strict(), request.body).records));
+  app.post('/api/history/removals', async request => store.markBrowserHistoryRemoved(parse(browserHistoryRemoval, request.body)));
+  app.get('/api/history', async request => { const query = parse(browserHistoryList, request.query); return store.listBrowserHistory({ query: query.query, cursor: query.cursorTime === undefined ? undefined : { time: query.cursorTime, url: query.cursorUrl! }, limit: query.limit }); });
   app.post('/api/folders/:folderId/links', async (request,reply) => {
     const {folderId}=parse(z.object({folderId:id}),request.params);
-    const body=parse(z.object({ url: linkUrl, title: nullableText.optional(), description: nullableText.optional(), displayName: nullableText.optional() }).strict(),request.body);
+    const body=parse(z.object({ url: linkUrl, title: nullableText.optional(), description: nullableText.optional(), displayName: nullableText.optional(), appearanceOverride:appearanceOverride.nullable().optional() }).strict(),request.body);
     const link=store.createLink(folderId,body);
     if (!link) return notFound(reply);
     if (/^https?:\/\//i.test(link.url)) {
@@ -62,7 +73,7 @@ export function createServer({ store, token }: ServerOptions) {
     }
     return reply.code(201).send(store.setMetadata(link.id, { status: 'succeeded', error: null }));
   });
-  app.patch('/api/links/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); const body=parse(z.object({url:linkUrl.optional(),title:nullableText.optional(),description:nullableText.optional(),faviconUrl:httpUrl.nullable().optional(),displayName:nullableText.optional(),appearanceOverride:z.record(z.string(),z.unknown()).nullable().optional()}).strict(),request.body); const link=store.updateLink(id,body); return link ?? notFound(reply); });
+  app.patch('/api/links/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); const body=parse(z.object({url:linkUrl.optional(),title:nullableText.optional(),description:nullableText.optional(),faviconUrl:httpUrl.nullable().optional(),displayName:nullableText.optional(),appearanceOverride:appearanceOverride.nullable().optional()}).strict(),request.body); const link=store.updateLink(id,body); return link ?? notFound(reply); });
   app.delete('/api/links/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); return store.deleteLink(id) ? reply.code(204).send() : notFound(reply); });
   app.post('/api/links/reorder', async request => { const body=parse(z.object({items:z.array(z.object({id,folderId:id})).min(1)}),request.body); store.reorderLinks(body.items); return { ok:true }; });
   app.post('/api/links/:id/clicks', async (request,reply) => { const {id}=parse(uuidParams,request.params); const link=store.recordClick(id); return link ?? notFound(reply); });

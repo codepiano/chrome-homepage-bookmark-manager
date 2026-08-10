@@ -3,11 +3,12 @@ import { createRoot } from 'react-dom/client';
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, horizontalListSortingStrategy, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { getDomain, getSubdomain } from 'tldts';
 import { api, defaultConnection, getConnection, getLastGoodSnapshot, saveConnection, saveLastGoodSnapshot, type ConnectionPreferences } from './api';
-import { defaultSettings, type Folder, type Link, type LinkDraft, type Settings } from './types';
+import { defaultSettings, type BrowserHistoryPage, type Folder, type Link, type LinkAppearance, type LinkDraft, type Settings } from './types';
 import './styles.css';
 
-type Dialog = { type: 'link'; link?: Link } | { type: 'folder'; folder?: Folder } | { type: 'settings' } | { type: 'connection' } | null;
+type Dialog = { type: 'link'; link?: Link; initial?: Partial<LinkDraft> } | { type: 'folder'; folder?: Folder } | { type: 'settings' } | { type: 'connection' } | null;
 type ViewMode = 'browse' | 'organize';
 const dateFormat = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' });
 const displayTitle = (link: Link) => link.displayName || link.title || new URL(link.url).hostname;
@@ -15,12 +16,17 @@ const normalizeLinkUrl = (value: string) => {
   const url = value.trim();
   return url && !/^[a-z][a-z\d+.-]*:/i.test(url) ? `https://${url}` : url;
 };
+const cardStyle = (link: Link) => ({
+  '--card-accent': link.appearanceOverride?.accentColor ?? 'var(--accent)',
+  '--card-background': link.appearanceOverride?.cardColor ?? 'var(--surface)',
+} as React.CSSProperties);
 
 function LinkContents({ link, settings }: { link: Link; settings: Settings }) {
   const title = displayTitle(link);
   const initial = title.trim().slice(0, 1).toUpperCase() || '·';
+  const customIcon = link.appearanceOverride?.icon;
   return <><span className="card-main">
-    {link.faviconUrl ? <img className="favicon" src={link.faviconUrl} alt="" onError={(event) => { event.currentTarget.style.display = 'none'; }} /> : <span className="favicon fallback">{initial}</span>}
+    {customIcon ? <span className="favicon fallback custom-icon">{customIcon}</span> : link.faviconUrl ? <img className="favicon" src={link.faviconUrl} alt="" onError={(event) => { event.currentTarget.style.display = 'none'; }} /> : <span className="favicon fallback">{initial}</span>}
     <span className="card-copy"><strong>{title}</strong>{settings.showDescription && link.description && <span className="description">{link.description}</span>}
       {(settings.showClickCount || settings.showLastVisited) && <span className="metrics">{settings.showClickCount && `${link.clickCount} 次访问`}{settings.showClickCount && settings.showLastVisited && link.lastClickedAt && ' · '}{settings.showLastVisited && link.lastClickedAt && `最近 ${dateFormat.format(new Date(link.lastClickedAt))}`}</span>}
     </span>
@@ -29,7 +35,7 @@ function LinkContents({ link, settings }: { link: Link; settings: Settings }) {
 
 function BrowseCard({ link, settings, onRecord, onRetry }: { link: Link; settings: Settings; onRecord(): void; onRetry(): void }) {
   const title = displayTitle(link);
-  return <article className={`link-card link-card-open ${settings.layout}`}><a className="card-link" href={link.url} aria-label={`打开 ${title}`} onClick={onRecord}><LinkContents link={link} settings={settings} /></a>{link.metadataStatus === 'failed' && <button type="button" className="retry-metadata" title={link.metadataError ?? '重新抓取标题、简介和图标'} onClick={onRetry}>重新抓取</button>}</article>;
+  return <article style={cardStyle(link)} className={`link-card link-card-open ${settings.layout}`}><a className="card-link" href={link.url} aria-label={`打开 ${title}`} onClick={onRecord}><LinkContents link={link} settings={settings} /></a>{link.metadataStatus === 'failed' && <button type="button" className="retry-metadata" title={link.metadataError ?? '重新抓取标题、简介和图标'} onClick={onRetry}>重新抓取</button>}</article>;
 }
 
 function SortableTab({ folder, active, onSelect }: { folder: Folder; active: boolean; onSelect(): void }) {
@@ -42,7 +48,7 @@ function SortableTab({ folder, active, onSelect }: { folder: Folder; active: boo
 function SortableCard({ link, settings, onOpen, onEdit }: { link: Link; settings: Settings; onOpen(): void; onEdit(): void }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: link.id });
   const title = displayTitle(link);
-  return <article ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }} className={`link-card organize-card ${settings.layout} ${isDragging ? 'dragging' : ''}`} {...attributes}>
+  return <article ref={setNodeRef} style={{ ...cardStyle(link), transform: CSS.Transform.toString(transform), transition }} className={`link-card organize-card ${settings.layout} ${isDragging ? 'dragging' : ''}`} {...attributes}>
     <button type="button" className="organize-open" onClick={onOpen} aria-label={`打开 ${title}`}><LinkContents link={link} settings={settings} /></button>
     <div className="card-actions"><button type="button" className="card-action" onClick={onEdit}>编辑</button><button type="button" className="card-action drag-handle" {...listeners} aria-label={`拖动 ${title} 排序`}>拖动</button></div>
   </article>;
@@ -50,12 +56,19 @@ function SortableCard({ link, settings, onOpen, onEdit }: { link: Link; settings
 
 function Toast({ children }: { children: React.ReactNode }) { return <p className="toast" role="status">{children}</p>; }
 
+function HighlightStrip({ title, links, settings, onOpen }: { title: string; links: Link[]; settings: Settings; onOpen(link: Link): void }) {
+  if (!links.length) return null;
+  return <section className="highlight-section" aria-label={title}><h2>{title}</h2><div className="highlight-links">{links.map((link) => <a key={link.id} style={cardStyle(link)} className="highlight-card" href={link.url} onClick={() => onOpen(link)}><LinkContents link={link} settings={settings} /></a>)}</div></section>;
+}
+
 function App() {
   const [folders, setFolders] = useState<Folder[]>([]);
   const [links, setLinks] = useState<Link[]>([]);
+  const [highlights, setHighlights] = useState<{ frequent: Link[]; recent: Link[] }>({ frequent: [], recent: [] });
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [showHistory, setShowHistory] = useState(false);
   const [mode, setMode] = useState<ViewMode>('browse');
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -81,6 +94,7 @@ function App() {
       setSelectedFolderId((current) => nextFolders.some((folder) => folder.id === current) ? current : nextFolders[0]?.id ?? null);
       setLinks(linksByFolder[nextFolders.find((folder) => folder.id === selectedFolderId)?.id ?? nextFolders[0]?.id] ?? []);
       setOfflineSnapshot(false); await saveLastGoodSnapshot({ folders: nextFolders, linksByFolder, settings: { ...defaultSettings, ...nextSettings } }); await flushClickRetryQueue();
+      void api.highlights().then(setHighlights).catch(() => undefined);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '无法连接本机服务');
       const snapshot = await getLastGoodSnapshot();
@@ -98,7 +112,7 @@ function App() {
     api.links(selectedFolderId).then(setLinks).catch((cause) => setError(cause.message));
   }, [selectedFolderId, offlineSnapshot]);
 
-  function recordLinkClick(link: Link) { void Promise.race([api.click(link.id), new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error('timeout')), 800))]).catch(() => clickRetryQueue.current.add(link.id)); }
+  function recordLinkClick(link: Link) { void Promise.race([api.click(link.id), new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error('timeout')), 800))]).then(() => api.highlights().then(setHighlights)).catch(() => clickRetryQueue.current.add(link.id)); }
   function openLink(link: Link) { recordLinkClick(link); window.location.assign(link.url); }
   async function reorderFolders(event: DragEndEvent) {
     if (!event.over || event.active.id === event.over.id) return;
@@ -119,19 +133,21 @@ function App() {
   }
   function deleteFolder(id: string, name: string) { setFolders((items) => { const next = items.filter((item) => item.id !== id); setSelectedFolderId((current) => current === id ? next[0]?.id ?? null : current); return next; }); setLinks((items) => selectedFolderId === id ? [] : items); setDialog(null); setToast(`已删除标签“${name}”`); }
 
-  const tabs = !loading && (mode === 'organize' && !offlineSnapshot ? <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void reorderFolders(event)}><nav className="tabs organize-tabs" aria-label="书签标签"><SortableContext items={folders.map((folder) => folder.id)} strategy={horizontalListSortingStrategy}>{folders.map((folder) => <SortableTab key={folder.id} folder={folder} active={folder.id === selectedFolderId} onSelect={() => setSelectedFolderId(folder.id)} />)}</SortableContext><button className="tab-add" onClick={() => setDialog({ type: 'folder' })}>添加标签</button></nav></DndContext> : <nav className="tabs" aria-label="书签标签">{folders.map((folder) => <div className="tab-wrap" key={folder.id}><button className={`tab ${folder.id === selectedFolderId ? 'active' : ''}`} onClick={() => setSelectedFolderId(folder.id)}>{folder.name}</button></div>)}</nav>);
+  const historyTab = <div className="tab-wrap"><button className={`tab history-tab ${showHistory ? 'active' : ''}`} onClick={() => { setShowHistory(true); setMode('browse'); }}>浏览记录</button></div>;
+  const tabs = !loading && (mode === 'organize' && !offlineSnapshot ? <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void reorderFolders(event)}><nav className="tabs organize-tabs" aria-label="书签标签">{historyTab}<SortableContext items={folders.map((folder) => folder.id)} strategy={horizontalListSortingStrategy}>{folders.map((folder) => <SortableTab key={folder.id} folder={folder} active={!showHistory && folder.id === selectedFolderId} onSelect={() => { setShowHistory(false); setSelectedFolderId(folder.id); }} />)}</SortableContext><button className="tab-add" onClick={() => setDialog({ type: 'folder' })}>添加标签</button></nav></DndContext> : <nav className="tabs" aria-label="书签标签">{historyTab}{folders.map((folder) => <div className="tab-wrap" key={folder.id}><button className={`tab ${!showHistory && folder.id === selectedFolderId ? 'active' : ''}`} onClick={() => { setShowHistory(false); setSelectedFolderId(folder.id); }}>{folder.name}</button></div>)}</nav>);
 
   return <main className={`app theme-${settings.theme} ${settings.compact ? 'compact' : ''} mode-${mode}`} style={rootStyle}>
-    <header className="header"><h1>快速访问</h1><div className="header-actions"><button className="quiet-button" onClick={() => setDialog({ type: 'settings' })}>设置</button>{!offlineSnapshot && <button className={mode === 'organize' ? 'primary' : 'quiet-button'} onClick={() => setMode((current) => current === 'browse' ? 'organize' : 'browse')}>{mode === 'organize' ? '完成整理' : '整理书签'}</button>}</div></header>
+    <header className="header"><h1>快速访问</h1><div className="header-actions"><button className="quiet-button" onClick={() => setDialog({ type: 'settings' })}>设置</button>{!offlineSnapshot && <button className={mode === 'organize' ? 'primary' : 'quiet-button'} onClick={() => { setShowHistory(false); setMode((current) => current === 'browse' ? 'organize' : 'browse'); }}>{mode === 'organize' ? '完成整理' : '整理书签'}</button>}</div></header>
     {error && <aside className="connection-error" role="alert"><span>无法连接本机服务：{error}{offlineSnapshot ? '。正在显示上次成功同步的只读快照。' : ''}</span><button onClick={() => void load()}>重试</button><button onClick={() => setDialog({ type: 'connection' })}>检查连接</button></aside>}
     {tabs}
-    <section className="content" aria-busy={loading}>{loading ? <p className="state">正在连接本机书签库…</p> : !selectedFolder ? <Empty onAdd={() => setDialog({ type: 'folder' })} /> : <>
+    {!offlineSnapshot && !showHistory && <div className="highlights"><HighlightStrip title="常用" links={highlights.frequent} settings={settings} onOpen={recordLinkClick} /><HighlightStrip title="最近访问" links={highlights.recent} settings={settings} onOpen={recordLinkClick} /></div>}
+    <section className="content" aria-busy={loading}>{loading ? <p className="state">正在连接本机书签库…</p> : showHistory ? <HistoryPanel onOpen={(url) => window.location.assign(url)} onAdd={(item) => selectedFolderId ? setDialog({ type: 'link', initial: { url: item.url, title: item.title } }) : setToast('请先创建一个标签，再将记录添加为书签。')} /> : !selectedFolder ? <Empty onAdd={() => setDialog({ type: 'folder' })} /> : <>
       <div className="section-heading"><div><h2>{selectedFolder.name}</h2><p>{links.length} 个链接{offlineSnapshot ? ' · 离线快照只读' : mode === 'organize' ? ' · 可拖动标签或链接排序' : ''}</p></div>{mode === 'organize' && !offlineSnapshot && <button className="text-button" onClick={() => setDialog({ type: 'folder', folder: selectedFolder })}>管理此标签</button>}</div>
       {mode === 'organize' && !offlineSnapshot ? <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void reorderLinks(event)}><SortableContext items={links.map((link) => link.id)} strategy={rectSortingStrategy}><div className={`links ${settings.layout}`}>{links.map((link) => <SortableCard key={link.id} link={link} settings={settings} onOpen={() => openLink(link)} onEdit={() => setDialog({ type: 'link', link })} />)}<AddCard folderName={selectedFolder.name} empty={links.length === 0} onClick={() => setDialog({ type: 'link' })} /></div></SortableContext></DndContext> : <div className={`links ${settings.layout}`}>{links.map((link) => <BrowseCard key={link.id} link={link} settings={settings} onRecord={() => recordLinkClick(link)} onRetry={() => void retryMetadata(link)} />)}{!offlineSnapshot && <AddCard folderName={selectedFolder.name} empty={links.length === 0} onClick={() => setDialog({ type: 'link' })} />}</div>}
     </>}</section>
     {toast && <Toast>{toast}</Toast>}
-    {dialog?.type === 'link' && selectedFolderId && <LinkDialog link={dialog.link} folderId={selectedFolderId} folders={folders} onClose={() => setDialog(null)} onSaved={(next) => { setLinks((items) => { const exists = items.some((item) => item.id === next.id); if (next.folderId !== selectedFolderId) return exists ? items.filter((item) => item.id !== next.id) : items; return exists ? items.map((item) => item.id === next.id ? next : item) : [...items, next]; }); setDialog(null); setToast(dialog.link ? '链接已更新' : '链接已添加'); }} onDeleted={(id, name) => { setLinks((items) => items.filter((item) => item.id !== id)); setDialog(null); setToast(`已删除链接“${name}”`); }} />}
-    {dialog?.type === 'folder' && <FolderDialog folder={dialog.folder} linkCount={dialog.folder?.id === selectedFolderId ? links.length : dialog.folder?.linkCount ?? 0} onClose={() => setDialog(null)} onSaved={(next) => { setFolders((items) => dialog.folder ? items.map((item) => item.id === next.id ? next : item) : [...items, next]); setSelectedFolderId(next.id); setDialog(null); setToast(dialog.folder ? '标签已更新' : '标签已添加'); }} onDeleted={deleteFolder} />}
+    {dialog?.type === 'link' && selectedFolderId && <LinkDialog link={dialog.link} initial={dialog.initial} folderId={selectedFolderId} folders={folders} onClose={() => setDialog(null)} onSaved={(next) => { setLinks((items) => { const exists = items.some((item) => item.id === next.id); if (next.folderId !== selectedFolderId) return exists ? items.filter((item) => item.id !== next.id) : items; return exists ? items.map((item) => item.id === next.id ? next : item) : [...items, next]; }); setDialog(null); setToast(dialog.link ? '链接已更新' : '链接已添加'); }} onDeleted={(id, name) => { setLinks((items) => items.filter((item) => item.id !== id)); setDialog(null); setToast(`已删除链接“${name}”`); }} />}
+    {dialog?.type === 'folder' && <FolderDialog folder={dialog.folder} linkCount={dialog.folder?.id === selectedFolderId ? links.length : dialog.folder?.linkCount ?? 0} onClose={() => setDialog(null)} onSaved={(next) => { setFolders((items) => dialog.folder ? items.map((item) => item.id === next.id ? next : item) : [...items, next]); setSelectedFolderId(next.id); setDialog(null); const moved = (next as Folder & { autoCollected?: number }).autoCollected ?? 0; setToast(dialog.folder ? moved ? `标签已更新，已自动归集 ${moved} 个链接` : '标签已更新' : '标签已添加'); void load(); }} onDeleted={deleteFolder} />}
     {dialog?.type === 'settings' && <SettingsDialog settings={settings} onClose={() => setDialog(null)} onOpenConnection={() => setDialog({ type: 'connection' })} onSaved={(next) => { setSettings(next); setDialog(null); setToast('显示设置已保存'); }} />}
     {dialog?.type === 'connection' && <ConnectionDialog onClose={() => setDialog(null)} />}
   </main>;
@@ -145,22 +161,107 @@ function DialogFrame({ title, children, onClose }: { title: string; children: Re
   return <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}><section className="dialog" role="dialog" aria-modal="true" aria-label={title} onMouseDown={(event) => event.stopPropagation()}><header><h2>{title}</h2><button className="quiet-button" onClick={onClose}>关闭</button></header>{children}</section></div>;
 }
 
-function LinkDialog({ link, folderId, folders, onClose, onSaved, onDeleted }: { link?: Link; folderId: string; folders: Folder[]; onClose(): void; onSaved(link: Link): void; onDeleted(id: string, name: string): void }) {
-  const [draft, setDraft] = useState<LinkDraft>({ url: link?.url ?? '', title: link?.title ?? '', description: link?.description ?? '', faviconUrl: link?.faviconUrl ?? '', displayName: link?.displayName ?? '' });
-  const [targetFolderId, setTargetFolderId] = useState(link?.folderId ?? folderId); const [busy, setBusy] = useState(false); const [message, setMessage] = useState<string | null>(null); const [deleteArmed, setDeleteArmed] = useState(false);
-  const update = (field: keyof LinkDraft, value: string) => setDraft((previous) => ({ ...previous, [field]: value }));
-  async function save(event: React.FormEvent) { event.preventDefault(); setBusy(true); setMessage(null); try { const normalized = { ...draft, url: normalizeLinkUrl(draft.url), faviconUrl: draft.faviconUrl?.trim() || null }; const next = link ? await api.updateLink(link.id, normalized) : await api.createLink(folderId, { url: normalized.url, title: normalized.title?.trim() || null, description: normalized.description?.trim() || null, displayName: normalized.displayName?.trim() || null }); const saved = link && targetFolderId !== link.folderId ? (await api.reorderLinks([{ id: next.id, folderId: targetFolderId }]), { ...next, folderId: targetFolderId }) : next; if (!link && /^https?:\/\//i.test(next.url)) void api.refreshMetadata(next.id).then(onSaved).catch(() => undefined); onSaved(saved); } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); } }
+function historyDayLabel(timestamp: number) {
+  const date = new Date(timestamp); const today = new Date(); const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
+  if (date.toDateString() === today.toDateString()) return '今天';
+  if (date.toDateString() === yesterday.toDateString()) return '昨天';
+  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }).format(date);
+}
+
+function historyFullHostname(url: string) { try { return new URL(url).hostname; } catch { return url; } }
+function historyHostname(url: string) { return historyFullHostname(url).replace(/^www\./, ''); }
+type DomainBranch = { label: string; hostname: string; items: BrowserHistoryPage[]; children: Map<string, DomainBranch> };
+type DomainGroup = { domain: string; items: BrowserHistoryPage[]; children: Map<string, DomainBranch> };
+function domainGroups(entries: BrowserHistoryPage[]) {
+  const groups = new Map<string, DomainGroup>();
+  for (const item of entries) {
+    const hostname = historyHostname(item.url); const domain = getDomain(item.url, { allowPrivateDomains: true }) ?? hostname;
+    let group = groups.get(domain);
+    if (!group) { group = { domain, items: [], children: new Map() }; groups.set(domain, group); }
+    const subdomain = getSubdomain(item.url, { allowPrivateDomains: true });
+    if (!subdomain) { group.items.push(item); continue; }
+    let children = group.children; const labels = subdomain.split('.').reverse(); const hostnameParts: string[] = [];
+    for (const label of labels) {
+      hostnameParts.unshift(label); let child = children.get(label);
+      if (!child) { child = { label, hostname: `${hostnameParts.join('.')}.${domain}`, items: [], children: new Map() }; children.set(label, child); }
+      child.items.push(item); children = child.children;
+    }
+  }
+  return [...groups.values()];
+}
+function HistoryItem({ item, onOpen, onAdd }: { item: BrowserHistoryPage; onOpen(url: string): void; onAdd(item: BrowserHistoryPage): void }) {
+  const title = item.title || historyHostname(item.url); const initial = title.trim().slice(0, 1).toUpperCase() || '·';
+  return <article className="history-item"><button type="button" className="history-open" onClick={() => onOpen(item.url)} aria-label={`打开 ${title}`}><span className="history-mark" aria-hidden="true">{initial}</span><span className="history-copy"><strong>{title}</strong><span className="history-domain">{historyHostname(item.url)}</span></span><span className="history-meta"><time dateTime={new Date(item.lastVisitTime).toISOString()}>{new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(new Date(item.lastVisitTime))}</time>{item.visitCount > 0 && <span>{item.visitCount} 次访问</span>}</span></button><button type="button" className="history-add quiet-button" onClick={() => onAdd(item)}>加入标签</button></article>;
+}
+function HistoryDomainBranch({ branch, depth, onOpen, onAdd }: { branch: DomainBranch; depth: number; onOpen(url: string): void; onAdd(item: BrowserHistoryPage): void }) {
+  const directItems = branch.items.filter((item) => historyFullHostname(item.url) === branch.hostname);
+  return <section className="history-domain-branch" style={{ '--domain-depth': String(depth) } as React.CSSProperties}><h4>{branch.hostname}<span>{branch.items.length} 条</span></h4>{directItems.map((item) => <HistoryItem key={item.url} item={item} onOpen={onOpen} onAdd={onAdd} />)}{[...branch.children.values()].map((child) => <HistoryDomainBranch key={child.hostname} branch={child} depth={depth + 1} onOpen={onOpen} onAdd={onAdd} />)}</section>;
+}
+
+function HistoryPanel({ onOpen, onAdd }: { onOpen(url: string): void; onAdd(item: BrowserHistoryPage): void }) {
+  const [query, setQuery] = useState('');
+  const [groupBy, setGroupBy] = useState<'date' | 'domain'>('date');
+  const [entries, setEntries] = useState<BrowserHistoryPage[]>([]);
+  const [nextCursor, setNextCursor] = useState<{ time: number; url: string } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const requestSerial = useRef(0);
+  const loadingMoreRef = useRef(false);
+  const loadMoreSentinel = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const requestId = ++requestSerial.current;
+    setLoading(true); setMessage(null); setNextCursor(null);
+    const timeout = window.setTimeout(() => {
+      void api.history(query.trim()).then((result) => {
+        if (requestSerial.current !== requestId) return;
+        setEntries(result.items); setNextCursor(result.nextCursor);
+      }).catch((cause) => { if (requestSerial.current === requestId) { setEntries([]); setMessage(cause instanceof Error ? cause.message : '无法读取本地浏览记录'); } }).finally(() => { if (requestSerial.current === requestId) setLoading(false); });
+    }, 180);
+    return () => window.clearTimeout(timeout);
+  }, [query]);
+  async function loadMore() {
+    if (!nextCursor || loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try { const result = await api.history(query.trim(), nextCursor); setEntries((current) => [...current, ...result.items]); setNextCursor(result.nextCursor); } catch (cause) { setMessage(cause instanceof Error ? cause.message : '无法读取更多记录'); } finally { loadingMoreRef.current = false; setLoadingMore(false); }
+  }
+  useEffect(() => {
+    const target = loadMoreSentinel.current;
+    if (!target || !nextCursor) return;
+    const observer = new IntersectionObserver((records) => { if (records.some((record) => record.isIntersecting)) void loadMore(); }, { rootMargin: '360px 0px' });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [nextCursor, query]);
+  const groups = entries.reduce<Array<{ label: string; items: BrowserHistoryPage[] }>>((result, item) => { const label = historyDayLabel(item.lastVisitTime); const group = result.at(-1); if (group?.label === label) group.items.push(item); else result.push({ label, items: [item] }); return result; }, []);
+  const byDomain = domainGroups(entries);
+  const emptyMessage = query.trim() ? '没有找到匹配的浏览记录。试试缩短关键词或搜索网址。' : '还没有同步到本机的浏览记录。打开几个网页后，它们会出现在这里。';
+  return <div className="history-panel"><div className="section-heading"><div><h2>浏览记录</h2><p>保存在本机 · 最近访问优先</p></div>{!loading && entries.length > 0 && <span className="history-count">已显示 {entries.length} 条</span>}</div><div className="history-controls"><label>搜索记录<input autoFocus type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题或网址" /></label><div className="history-group-switch" aria-label="分组方式"><button type="button" className={groupBy === 'date' ? 'active' : ''} onClick={() => setGroupBy('date')}>按日期</button><button type="button" className={groupBy === 'domain' ? 'active' : ''} onClick={() => setGroupBy('domain')}>按域名</button></div></div>{message && <p className="form-error">{message}</p>}<div className={`history-list ${groupBy === 'domain' ? 'grouped-by-domain' : ''}`} aria-busy={loading}>{loading ? <p className="history-state">正在读取本机浏览记录…</p> : entries.length === 0 ? <p className="history-state">{emptyMessage}</p> : groupBy === 'date' ? groups.map((group) => <section className="history-day" key={group.label}><h3>{group.label}<span>{group.items.length} 条</span></h3>{group.items.map((item) => <HistoryItem key={item.url} item={item} onOpen={onOpen} onAdd={onAdd} />)}</section>) : byDomain.map((group) => <section className="history-domain-group" key={group.domain}><h3>{group.domain}<span>{group.items.length + [...group.children.values()].reduce((total, child) => total + child.items.length, 0)} 条</span></h3>{group.items.map((item) => <HistoryItem key={item.url} item={item} onOpen={onOpen} onAdd={onAdd} />)}{[...group.children.values()].map((branch) => <HistoryDomainBranch key={branch.hostname} branch={branch} depth={1} onOpen={onOpen} onAdd={onAdd} />)}</section>)}</div>{nextCursor && <div ref={loadMoreSentinel} className="history-load-sentinel" aria-live="polite">{loadingMore ? '正在加载更多记录…' : ''}</div>}</div>;
+}
+
+function LinkDialog({ link, initial, folderId, folders, onClose, onSaved, onDeleted }: { link?: Link; initial?: Partial<LinkDraft>; folderId: string; folders: Folder[]; onClose(): void; onSaved(link: Link): void; onDeleted(id: string, name: string): void }) {
+  const [draft, setDraft] = useState<LinkDraft>({ url: link?.url ?? initial?.url ?? '', title: link?.title ?? initial?.title ?? '', description: link?.description ?? initial?.description ?? '', faviconUrl: link?.faviconUrl ?? initial?.faviconUrl ?? '', displayName: link?.displayName ?? initial?.displayName ?? '', appearanceOverride: link?.appearanceOverride ?? initial?.appearanceOverride ?? null });
+  const [targetFolderId, setTargetFolderId] = useState(link?.folderId ?? folderId); const [busy, setBusy] = useState(false); const [message, setMessage] = useState<string | null>(null); const [deleteArmed, setDeleteArmed] = useState(false); const [duplicates, setDuplicates] = useState<Link[]>([]);
+  const update = <K extends keyof LinkDraft>(field: K, value: LinkDraft[K]) => setDraft((previous) => ({ ...previous, [field]: value }));
+  const updateAppearance = <K extends keyof LinkAppearance>(field: K, value: LinkAppearance[K]) => update('appearanceOverride', { ...(draft.appearanceOverride ?? {}), [field]: value });
+  useEffect(() => {
+    if (link || !draft.url.trim()) { setDuplicates([]); return; }
+    const timeout = window.setTimeout(() => { void api.duplicates(normalizeLinkUrl(draft.url)).then(setDuplicates).catch(() => setDuplicates([])); }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [draft.url, link]);
+  async function save(event: React.FormEvent) { event.preventDefault(); setBusy(true); setMessage(null); try { const normalized = { ...draft, url: normalizeLinkUrl(draft.url), faviconUrl: draft.faviconUrl?.trim() || null, appearanceOverride: draft.appearanceOverride ?? null }; const next = link ? await api.updateLink(link.id, normalized) : await api.createLink(folderId, { url: normalized.url, title: normalized.title?.trim() || null, description: normalized.description?.trim() || null, displayName: normalized.displayName?.trim() || null, appearanceOverride: normalized.appearanceOverride }); const saved = link && targetFolderId !== link.folderId ? (await api.reorderLinks([{ id: next.id, folderId: targetFolderId }]), { ...next, folderId: targetFolderId }) : next; if (!link && /^https?:\/\//i.test(next.url)) void api.refreshMetadata(next.id).then(onSaved).catch(() => undefined); onSaved(saved); } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); } }
   async function remove() { if (!link) return; setBusy(true); setMessage(null); try { await api.deleteLink(link.id); onDeleted(link.id, displayTitle(link)); } catch (cause) { setMessage(`删除失败：${cause instanceof Error ? cause.message : '无法连接本机服务'}`); setDeleteArmed(false); } finally { setBusy(false); } }
   const automaticInfo = link ? (link.metadataStatus === 'succeeded' ? '已补充标题、简介或图标。' : link.metadataStatus === 'pending' ? '正在补充，不影响打开链接。' : '未获取，不影响打开链接。') : '保存后会尝试补充标题、简介和图标；无法获取也不影响打开链接。';
-  return <DialogFrame title={link ? '编辑链接' : '添加链接'} onClose={onClose}><form onSubmit={save} className="form"><label>网址<input required type="text" inputMode="url" value={draft.url} onChange={(event) => update('url', event.target.value)} onBlur={(event) => update('url', normalizeLinkUrl(event.target.value))} placeholder="example.com、https://example.com 或 chrome://..." /></label><fieldset><legend>我的自定义</legend><label>显示名（优先展示，可选）<input value={draft.displayName ?? ''} onChange={(event) => update('displayName', event.target.value)} /></label><label>标题（可选）<input value={draft.title ?? ''} onChange={(event) => update('title', event.target.value)} /></label><label>简介（可选）<textarea value={draft.description ?? ''} onChange={(event) => update('description', event.target.value)} /></label></fieldset><fieldset><legend>自动信息</legend><label>图标网址（可选）<input type="url" value={draft.faviconUrl ?? ''} onChange={(event) => update('faviconUrl', event.target.value)} /></label><p className={`metadata-note ${link?.metadataStatus ?? 'pending'}`}>自动信息：{automaticInfo}</p></fieldset>{link && <fieldset><legend>整理归属</legend><label>移动到标签<select value={targetFolderId} onChange={(event) => setTargetFolderId(event.target.value)}>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label></fieldset>}<p className="hint">你的内容始终优先；自动抓取只补齐空白字段和图标。</p>{deleteArmed && link && <DeleteConfirmation subject={`链接“${displayTitle(link)}”`} detail="删除后将无法恢复。" busy={busy} onCancel={() => setDeleteArmed(false)} onConfirm={() => void remove()} />}{message && <p className="form-error">{message}</p>}<footer>{link && !deleteArmed && <><button type="button" className="text-button" onClick={async () => { setBusy(true); try { onSaved(await api.refreshMetadata(link.id)); } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); } }}>重新抓取</button><button type="button" className="danger" onClick={() => setDeleteArmed(true)}>删除链接</button></>}{!deleteArmed && <button className="primary" disabled={busy}>{busy ? '保存中…' : '保存'}</button>}</footer></form></DialogFrame>;
+  return <DialogFrame title={link ? '编辑链接' : '添加链接'} onClose={onClose}><form onSubmit={save} className="form"><label>网址<input required type="text" inputMode="url" value={draft.url} onChange={(event) => update('url', event.target.value)} onBlur={(event) => update('url', normalizeLinkUrl(event.target.value))} placeholder="example.com、https://example.com 或 chrome://..." /></label>{duplicates.length > 0 && <p className="duplicate-note">已存在 {duplicates.length} 个相同网址：{duplicates.map((item) => displayTitle(item)).join('、')}。仍可继续添加。</p>}<fieldset><legend>我的自定义</legend><label>显示名（优先展示，可选）<input value={draft.displayName ?? ''} onChange={(event) => update('displayName', event.target.value)} /></label><label>标题（可选）<input value={draft.title ?? ''} onChange={(event) => update('title', event.target.value)} /></label><label>简介（可选）<textarea value={draft.description ?? ''} onChange={(event) => update('description', event.target.value)} /></label></fieldset><fieldset><legend>卡片外观</legend><label>强调色<input type="color" value={draft.appearanceOverride?.accentColor ?? '#4f46e5'} onChange={(event) => updateAppearance('accentColor', event.target.value)} /></label><label>卡片底色<input type="color" value={draft.appearanceOverride?.cardColor ?? '#ffffff'} onChange={(event) => updateAppearance('cardColor', event.target.value)} /></label><label>自定义图标（可选）<input value={draft.appearanceOverride?.icon ?? ''} maxLength={8} onChange={(event) => updateAppearance('icon', event.target.value)} placeholder="例如 📚" /></label><button type="button" className="text-button reset-appearance" onClick={() => update('appearanceOverride', null)}>恢复默认外观</button></fieldset><fieldset><legend>自动信息</legend><label>图标网址（可选）<input type="url" value={draft.faviconUrl ?? ''} onChange={(event) => update('faviconUrl', event.target.value)} /></label><p className={`metadata-note ${link?.metadataStatus ?? 'pending'}`}>自动信息：{automaticInfo}</p></fieldset>{link && <fieldset><legend>整理归属</legend><label>移动到标签<select value={targetFolderId} onChange={(event) => setTargetFolderId(event.target.value)}>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label></fieldset>}<p className="hint">你的内容始终优先；自动抓取只补齐空白字段和图标。</p>{deleteArmed && link && <DeleteConfirmation subject={`链接“${displayTitle(link)}”`} detail="删除后将无法恢复。" busy={busy} onCancel={() => setDeleteArmed(false)} onConfirm={() => void remove()} />}{message && <p className="form-error">{message}</p>}<footer>{link && !deleteArmed && <><button type="button" className="text-button" onClick={async () => { setBusy(true); try { onSaved(await api.refreshMetadata(link.id)); } catch (cause) { setMessage((cause as Error).message); } finally { setBusy(false); } }}>重新抓取</button><button type="button" className="danger" onClick={() => setDeleteArmed(true)}>删除链接</button></>}{!deleteArmed && <button className="primary" disabled={busy}>{busy ? '保存中…' : '保存'}</button>}</footer></form></DialogFrame>;
 }
 
 function DeleteConfirmation({ subject, detail, busy, onCancel, onConfirm }: { subject: string; detail: string; busy: boolean; onCancel(): void; onConfirm(): void }) { return <div className="delete-confirm" role="alert"><strong>确认删除{subject}？</strong><span>{detail}</span><div><button type="button" className="quiet-button" onClick={onCancel}>取消</button><button type="button" className="danger" disabled={busy} onClick={onConfirm}>{busy ? '删除中…' : '确认删除'}</button></div></div>; }
 
 function FolderDialog({ folder, linkCount, onClose, onSaved, onDeleted }: { folder?: Folder; linkCount: number; onClose(): void; onSaved(folder: Folder): void; onDeleted(id: string, name: string): void }) {
-  const [name, setName] = useState(folder?.name ?? ''); const [message, setMessage] = useState<string | null>(null); const [deleteArmed, setDeleteArmed] = useState(false); const [deleting, setDeleting] = useState(false);
+  const [name, setName] = useState(folder?.name ?? ''); const [autoRulesText, setAutoRulesText] = useState(folder?.autoRules.join('\n') ?? ''); const [message, setMessage] = useState<string | null>(null); const [deleteArmed, setDeleteArmed] = useState(false); const [deleting, setDeleting] = useState(false);
+  const autoRules = () => [...new Set(autoRulesText.split(/[\n,]+/).map((rule) => rule.trim().toLowerCase()).filter(Boolean))];
   async function remove() { if (!folder) return; setDeleting(true); setMessage(null); try { await api.deleteFolder(folder.id); onDeleted(folder.id, folder.name); } catch (cause) { setMessage(`删除失败：${cause instanceof Error ? cause.message : '无法连接本机服务'}`); setDeleteArmed(false); } finally { setDeleting(false); } }
-  return <DialogFrame title={folder ? '管理标签' : '添加标签'} onClose={onClose}><form className="form" onSubmit={async (event) => { event.preventDefault(); try { onSaved(folder ? await api.updateFolder(folder.id, name) : await api.createFolder(name)); } catch (cause) { setMessage((cause as Error).message); } }}><label>标签名称<input required autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label>{folder && <p className="hint">此标签包含 {linkCount} 个链接。</p>}{deleteArmed && folder && <DeleteConfirmation subject={`标签“${folder.name}”`} detail={`其中 ${linkCount} 个链接也会永久删除。`} busy={deleting} onCancel={() => setDeleteArmed(false)} onConfirm={() => void remove()} />}{message && <p className="form-error">{message}</p>}<footer>{folder && !deleteArmed && <button type="button" className="danger" onClick={() => setDeleteArmed(true)}>删除标签</button>}{!deleteArmed && <button className="primary">保存</button>}</footer></form></DialogFrame>;
+  return <DialogFrame title={folder ? '管理标签' : '添加标签'} onClose={onClose}><form className="form" onSubmit={async (event) => { event.preventDefault(); setMessage(null); try { const input = { name, autoRules: autoRules() }; onSaved(folder ? await api.updateFolder(folder.id, input) : await api.createFolder(input)); } catch (cause) { setMessage((cause as Error).message); } }}><label>标签名称<input required autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label><fieldset><legend>自动归集规则</legend><label>匹配域名<textarea value={autoRulesText} onChange={(event) => setAutoRulesText(event.target.value)} placeholder={'例如：\n*.github.com\ngithub.com'} /></label><p className="hint">每行或逗号分隔一条。`*.github.com` 会匹配 github.com 及其子域名；保存后会立即归集已有链接。</p></fieldset>{folder && <p className="hint">此标签包含 {linkCount} 个链接。多个标签命中同一网址时，以标签从左到右的顺序为准。</p>}{deleteArmed && folder && <DeleteConfirmation subject={`标签“${folder.name}”`} detail={`其中 ${linkCount} 个链接也会永久删除。`} busy={deleting} onCancel={() => setDeleteArmed(false)} onConfirm={() => void remove()} />}{message && <p className="form-error">{message}</p>}<footer>{folder && !deleteArmed && <button type="button" className="danger" onClick={() => setDeleteArmed(true)}>删除标签</button>}{!deleteArmed && <button className="primary">保存</button>}</footer></form></DialogFrame>;
 }
 
 function SettingsDialog({ settings, onClose, onOpenConnection, onSaved }: { settings: Settings; onClose(): void; onOpenConnection(): void; onSaved(settings: Settings): void }) {

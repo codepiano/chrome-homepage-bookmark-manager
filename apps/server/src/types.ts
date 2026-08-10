@@ -1,8 +1,15 @@
 export type MetadataStatus = 'pending' | 'succeeded' | 'failed';
 
+export interface LinkAppearance {
+  accentColor?: string;
+  cardColor?: string;
+  icon?: string;
+}
+
 export interface Folder {
   id: string;
   name: string;
+  autoRules: string[];
   position: number;
   createdAt: string;
   updatedAt: string;
@@ -20,12 +27,28 @@ export interface Link {
   metadataStatus: MetadataStatus;
   metadataError: string | null;
   metadataFetchedAt: string | null;
-  appearanceOverride: Record<string, unknown> | null;
+  appearanceOverride: LinkAppearance | null;
   position: number;
   createdAt: string;
   updatedAt: string;
   clickCount: number;
   lastClickedAt: string | null;
+}
+
+export interface BrowserHistoryRecord {
+  url: string;
+  title: string | null;
+  lastVisitTime: number;
+  visitCount: number;
+  source: 'initial' | 'live';
+}
+
+export interface BrowserHistoryPage {
+  url: string;
+  title: string | null;
+  lastVisitTime: number;
+  visitCount: number;
+  chromeRemovedAt: string | null;
 }
 
 export const DEFAULT_SETTINGS = {

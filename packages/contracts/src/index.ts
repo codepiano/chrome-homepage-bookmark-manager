@@ -3,6 +3,11 @@ import { z } from 'zod';
 export const themeSchema = z.enum(['system', 'light', 'dark']);
 export const layoutSchema = z.enum(['grid', 'list']);
 export const metadataStatusSchema = z.enum(['pending', 'succeeded', 'failed']);
+export const linkAppearanceSchema = z.object({
+  accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  cardColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
+  icon: z.string().trim().max(8).optional(),
+}).strict();
 
 export const settingsSchema = z.object({
   theme: themeSchema.default('system'),
@@ -25,6 +30,7 @@ export type Settings = z.infer<typeof settingsSchema>;
 export const folderSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(80),
+  autoRules: z.array(z.string()).default([]),
   position: z.number(),
   createdAt: z.string(),
   updatedAt: z.string()
@@ -38,6 +44,7 @@ export const linkSchema = z.object({
   title: z.string().max(300).nullable(),
   description: z.string().max(1_000).nullable(),
   faviconUrl: z.string().url().nullable(),
+  appearanceOverride: linkAppearanceSchema.nullable(),
   displayName: z.string().max(300).nullable(),
   metadataStatus: metadataStatusSchema,
   metadataError: z.string().nullable(),
@@ -50,13 +57,15 @@ export const linkSchema = z.object({
 });
 export type Link = z.infer<typeof linkSchema>;
 
-export const createFolderSchema = z.object({ name: z.string().trim().min(1).max(80) });
+export const autoRuleSchema = z.string().trim().toLowerCase().regex(/^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/, 'Use a domain such as github.com or *.github.com');
+export const createFolderSchema = z.object({ name: z.string().trim().min(1).max(80), autoRules: z.array(autoRuleSchema).max(50).default([]) });
 export const updateFolderSchema = createFolderSchema.partial();
 export const createLinkSchema = z.object({
   url: z.string().url(),
   displayName: z.string().trim().max(300).optional(),
   title: z.string().trim().max(300).optional(),
-  description: z.string().trim().max(1_000).optional()
+  description: z.string().trim().max(1_000).optional(),
+  appearanceOverride: linkAppearanceSchema.nullable().optional()
 });
 export const updateLinkSchema = createLinkSchema.partial().extend({
   faviconUrl: z.string().url().nullable().optional()

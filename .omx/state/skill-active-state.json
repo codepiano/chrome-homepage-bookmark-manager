@@ -3,10 +3,8 @@
   "active": true,
   "skill": "plan",
   "keyword": "$plan",
-  "phase": "reviewing",
+  "phase": "executing",
   "activated_at": "2026-08-09T08:07:11.768Z",
-  "updated_at": "2026-08-09T14:23:28.093Z",
-  "source": "keyword-detector",
-  "iteration": 48,
-  "last_turn_at": "2026-08-10T07:01:39.023Z"
+  "updated_at": "2026-08-10T19:45:27.057Z",
+  "source": "keyword-detector"
 }

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const themeSchema = z.enum(['system', 'light', 'dark']);
 export const layoutSchema = z.enum(['grid', 'list']);
+export const columnModeSchema = z.enum(['auto', 'fixed']);
 export const metadataStatusSchema = z.enum(['pending', 'succeeded', 'failed']);
 export const linkAppearanceSchema = z.object({
   accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
@@ -12,6 +13,7 @@ export const linkAppearanceSchema = z.object({
 export const settingsSchema = z.object({
   theme: themeSchema.default('system'),
   layout: layoutSchema.default('grid'),
+  columnMode: columnModeSchema.default('auto'),
   columns: z.number().int().min(1).max(12).default(4),
   gap: z.number().int().min(4).max(64).default(20),
   cardWidth: z.number().int().min(160).max(640).default(280),
@@ -21,6 +23,7 @@ export const settingsSchema = z.object({
   showDescription: z.boolean().default(true),
   showClickCount: z.boolean().default(true),
   showLastVisited: z.boolean().default(true),
+  showRecommendations: z.boolean().default(true),
   fontFamily: z.string().max(200).default('system-ui, sans-serif'),
   textColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#172033'),
   accentColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#2f67e8')

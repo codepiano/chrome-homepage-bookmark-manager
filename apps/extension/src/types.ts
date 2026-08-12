@@ -36,6 +36,7 @@ export interface BrowserHistoryPage {
 export interface Settings {
   theme: 'system' | 'light' | 'dark';
   layout: 'grid' | 'list';
+  columnMode: 'auto' | 'fixed';
   columns: number;
   gap: number;
   cardWidth: number;
@@ -48,13 +49,16 @@ export interface Settings {
   showDescription: boolean;
   showClickCount: boolean;
   showLastVisited: boolean;
+  showRecommendations: boolean;
 }
 
+export interface Recommendation extends Link { score: number; }
+
 export const defaultSettings: Settings = {
-  theme: 'system', layout: 'grid', columns: 4, gap: 14, cardWidth: 230,
+  theme: 'system', layout: 'grid', columnMode: 'auto', columns: 4, gap: 14, cardWidth: 230,
   centered: false, showAddButton: true, compact: false, fontFamily: 'system-ui',
   textColor: null, accentColor: '#4f46e5', showDescription: true,
-  showClickCount: true, showLastVisited: true,
+  showClickCount: true, showLastVisited: true, showRecommendations: true,
 };
 
 export type LinkDraft = Pick<Link, 'url' | 'title' | 'description' | 'faviconUrl' | 'displayName' | 'appearanceOverride'>;

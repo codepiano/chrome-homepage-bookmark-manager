@@ -52,8 +52,8 @@ export interface BrowserHistoryPage {
 }
 
 export const DEFAULT_SETTINGS = {
-  theme: 'system', layout: 'grid', columns: 4, gap: 16, cardWidth: 240,
+  theme: 'system', layout: 'grid', columnMode: 'auto', columns: 4, gap: 16, cardWidth: 240,
   centered: true, showAddButton: true, compact: false, fontFamily: 'system-ui',
   textColor: null, accentColor: '#4f46e5', showDescription: true,
-  showClickCount: true, showLastVisited: true,
+  showClickCount: true, showLastVisited: true, showRecommendations: true,
 };

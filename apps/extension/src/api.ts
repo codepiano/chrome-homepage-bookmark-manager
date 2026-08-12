@@ -1,4 +1,4 @@
-import type { BrowserHistoryPage, Folder, Link, LinkAppearance, LinkDraft, Settings } from './types';
+import type { BrowserHistoryPage, Folder, Link, LinkAppearance, LinkDraft, Recommendation, Settings } from './types';
 
 export interface ConnectionPreferences { apiBaseUrl: string; token: string; }
 export const defaultConnection: ConnectionPreferences = { apiBaseUrl: 'http://127.0.0.1:3721', token: '' };
@@ -58,7 +58,7 @@ export const api = {
   reorderLinks: (items: Array<{ id: string; folderId: string }>) => request<void>('/api/links/reorder', { method: 'POST', body: JSON.stringify({ items }) }),
   refreshMetadata: (id: string) => request<Link>(`/api/links/${id}/refresh-metadata`, { method: 'POST' }),
   duplicates: (url: string) => request<Link[]>(`/api/links/duplicates?url=${encodeURIComponent(url)}`),
-  highlights: () => request<{ frequent: Link[]; recent: Link[] }>('/api/highlights'),
+  recommendations: () => request<{ recommendations: Recommendation[] }>('/api/recommendations'),
   history: (query = '', cursor?: { time: number; url: string }) => { const params = new URLSearchParams({ query, limit: '50' }); if (cursor) { params.set('cursorTime', String(cursor.time)); params.set('cursorUrl', cursor.url); } return request<{ items: BrowserHistoryPage[]; nextCursor: { time: number; url: string } | null }>(`/api/history?${params}`); },
   click: (id: string) => request<Link>(`/api/links/${id}/clicks`, { method: 'POST' }),
   settings: () => request<Settings>('/api/settings'),

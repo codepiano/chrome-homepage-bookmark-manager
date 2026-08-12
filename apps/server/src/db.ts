@@ -67,18 +67,22 @@ export class Store {
   setSettings(value: Record<string, unknown>) { const current = this.getSettings(); const next = { ...current, ...value }; delete (next as Record<string, unknown>).updatedAt; const timestamp = now(); this.db.prepare('UPDATE settings SET value_json=?, updated_at=? WHERE id=1').run(JSON.stringify(next), timestamp); return { ...next, updatedAt: timestamp }; }
   listFolders() { return (this.db.prepare('SELECT f.*, COUNT(l.id) AS link_count FROM folders f LEFT JOIN links l ON l.folder_id=f.id GROUP BY f.id ORDER BY f.position, f.id').all() as SqlRow[]).map(folderFrom); }
   getFolder(id: string) { const row = this.db.prepare('SELECT f.*, COUNT(l.id) AS link_count FROM folders f LEFT JOIN links l ON l.folder_id=f.id WHERE f.id=? GROUP BY f.id').get(id) as SqlRow | undefined; return row && folderFrom(row); }
+  findFolderByName(name: string) { const row = this.db.prepare('SELECT f.*, COUNT(l.id) AS link_count FROM folders f LEFT JOIN links l ON l.folder_id=f.id WHERE f.name=? COLLATE NOCASE GROUP BY f.id ORDER BY f.position, f.id LIMIT 1').get(name) as SqlRow | undefined; return row && folderFrom(row); }
   createFolder(name: string, autoRules: string[] = []) { const timestamp = now(), id = randomUUID(); const row = this.db.prepare('SELECT COALESCE(MAX(position), -1) AS max_position FROM folders').get() as SqlRow; this.db.prepare('INSERT INTO folders (id,name,auto_rules_json,position,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, name, JSON.stringify(autoRules), Number(row.max_position) + 1, timestamp, timestamp); return this.getFolder(id)!; }
   updateFolder(id: string, fields: { name: string; autoRules: string[] }) { const change = this.db.prepare('UPDATE folders SET name=?, auto_rules_json=?, updated_at=? WHERE id=?').run(fields.name, JSON.stringify(fields.autoRules), now(), id); if (!change.changes) return null; const folder = this.getFolder(id)!; const moved = this.applyAutoRules(); return { folder, moved }; }
   deleteFolder(id: string) { return this.db.prepare('DELETE FROM folders WHERE id=?').run(id).changes > 0; }
   reorderFolders(ids: string[]) { this.transaction(() => { const count = (this.db.prepare('SELECT COUNT(*) AS count FROM folders').get() as SqlRow).count; if (ids.length !== Number(count) || new Set(ids).size !== ids.length) throw new Error('Folder reorder must include every folder exactly once'); for (const [position, id] of ids.entries()) if (this.db.prepare('UPDATE folders SET position=?, updated_at=? WHERE id=?').run(position, now(), id).changes !== 1) throw new Error('Unknown folder'); }); return this.listFolders(); }
   listLinks(folderId: string) { return (this.db.prepare(`SELECT l.*, COUNT(c.id) AS click_count, MAX(c.clicked_at) AS last_clicked_at FROM links l LEFT JOIN click_events c ON c.link_id=l.id WHERE l.folder_id=? GROUP BY l.id ORDER BY l.position, l.id`).all(folderId) as SqlRow[]).map(linkFrom); }
   findLinksByUrl(url: string) { return (this.db.prepare(`SELECT l.*, COUNT(c.id) AS click_count, MAX(c.clicked_at) AS last_clicked_at FROM links l LEFT JOIN click_events c ON c.link_id=l.id WHERE l.url=? GROUP BY l.id ORDER BY l.created_at DESC`).all(url) as SqlRow[]).map(linkFrom); }
-  listHighlights(limit = 6) {
+  listRecommendations(limit = 8) {
     const base = `SELECT l.*, COUNT(c.id) AS click_count, MAX(c.clicked_at) AS last_clicked_at FROM links l JOIN click_events c ON c.link_id=l.id GROUP BY l.id`;
-    return {
-      frequent: (this.db.prepare(`${base} ORDER BY click_count DESC, last_clicked_at DESC LIMIT ?`).all(limit) as SqlRow[]).map(linkFrom),
-      recent: (this.db.prepare(`${base} ORDER BY last_clicked_at DESC LIMIT ?`).all(limit) as SqlRow[]).map(linkFrom),
-    };
+    const current = Date.now();
+    return (this.db.prepare(base).all() as SqlRow[]).map(linkFrom).map(link => {
+      const daysSinceLastVisit = link.lastClickedAt ? Math.max(0, (current - new Date(link.lastClickedAt).getTime()) / 86_400_000) : Infinity;
+      const frequencyScore = Math.log2(link.clickCount + 1) * 60;
+      const recencyScore = Number.isFinite(daysSinceLastVisit) ? 40 * Math.exp(-daysSinceLastVisit / 14) : 0;
+      return { ...link, score: Math.round(frequencyScore + recencyScore) };
+    }).sort((left, right) => right.score - left.score || right.clickCount - left.clickCount || String(right.lastClickedAt).localeCompare(String(left.lastClickedAt))).slice(0, limit);
   }
   getLink(id: string) { const row = this.db.prepare(`SELECT l.*, COUNT(c.id) AS click_count, MAX(c.clicked_at) AS last_clicked_at FROM links l LEFT JOIN click_events c ON c.link_id=l.id WHERE l.id=? GROUP BY l.id`).get(id) as SqlRow | undefined; return row && linkFrom(row); }
   private folderForUrl(url: string, fallbackFolderId: string) {
@@ -86,12 +90,14 @@ export class Store {
     try { hostname = new URL(url).hostname.toLowerCase().replace(/\.$/, ''); } catch { return fallbackFolderId; }
     return this.listFolders().find(folder => folder.autoRules.some(rule => rule.startsWith('*.') ? hostname === rule.slice(2) || hostname.endsWith(`.${rule.slice(2)}`) : hostname === rule))?.id ?? fallbackFolderId;
   }
-  private moveLinkToFolder(id: string, folderId: string) {
+  moveLinkToFolder(id: string, folderId: string) {
+    if (!this.getFolder(folderId)) return null;
     const current = this.getLink(id);
-    if (!current || current.folderId === folderId) return false;
+    if (!current) return null;
+    if (current.folderId === folderId) return current;
     const max = this.db.prepare('SELECT COALESCE(MAX(position), -1) AS max_position FROM links WHERE folder_id=?').get(folderId) as SqlRow;
     this.db.prepare('UPDATE links SET folder_id=?, position=?, updated_at=? WHERE id=?').run(folderId, Number(max.max_position) + 1, now(), id);
-    return true;
+    return this.getLink(id)!;
   }
   private applyAutoRules() { let moved = 0; for (const folder of this.listFolders()) for (const link of this.listLinks(folder.id)) { const target = this.folderForUrl(link.url, folder.id); if (target !== folder.id && this.moveLinkToFolder(link.id, target)) moved++; } return moved; }
   createLink(folderId: string, fields: { url: string; title?: string | null; description?: string | null; displayName?: string | null; appearanceOverride?: LinkAppearance | null }) { if (!this.getFolder(folderId)) return null; const targetFolderId = this.folderForUrl(fields.url, folderId); const timestamp=now(), id=randomUUID(); const max = this.db.prepare('SELECT COALESCE(MAX(position), -1) AS max_position FROM links WHERE folder_id=?').get(targetFolderId) as SqlRow; this.db.prepare('INSERT INTO links (id,folder_id,url,title,description,display_name,appearance_override_json,position,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, targetFolderId, fields.url, fields.title ?? null, fields.description ?? null, fields.displayName ?? null, fields.appearanceOverride ? JSON.stringify(fields.appearanceOverride) : null, Number(max.max_position)+1, timestamp, timestamp); return this.getLink(id)!; }

@@ -36,9 +36,10 @@ test('API enforces bearer token and records a click', async () => {
   const clicked=await app.inject({method:'POST',url:`/api/links/${linkId}/clicks`,headers});
   assert.equal(clicked.statusCode,200);
   assert.equal((clicked.json() as {clickCount:number}).clickCount,1);
-  const highlights=await app.inject({method:'GET',url:'/api/highlights',headers});
-  assert.equal(highlights.statusCode,200);
-  assert.equal((highlights.json() as {frequent:Array<{id:string}>,recent:Array<{id:string}>}).frequent[0]?.id,linkId);
+  const recommendations=await app.inject({method:'GET',url:'/api/recommendations',headers});
+  assert.equal(recommendations.statusCode,200);
+  assert.equal((recommendations.json() as {recommendations:Array<{id:string;score:number}>}).recommendations[0]?.id,linkId);
+  assert.equal((recommendations.json() as {recommendations:Array<{score:number}>}).recommendations[0]?.score > 0, true);
   const history=await app.inject({method:'POST',url:'/api/history/records',headers,payload:{records:[{url:'https://example.com/article',title:'Example article',lastVisitTime:1_700_000_000_000,visitCount:3,source:'initial'},{url:'https://example.com/article',title:'Updated title',lastVisitTime:1_700_000_001_000,visitCount:4,source:'live'}]}});
   assert.equal(history.statusCode,200);
   assert.equal(history.json().received,2);
@@ -53,5 +54,42 @@ test('API enforces bearer token and records a click', async () => {
   assert.equal(internal.statusCode,201);
   assert.equal((internal.json() as {metadataStatus:string}).metadataStatus,'succeeded');
   assert.equal((internal.json() as {title:string}).title,'扩展管理');
+  const aiImport=await app.inject({method:'POST',url:'/api/ai/links',headers,payload:{links:[
+    {url:'ai.example.com',title:'AI added',folderName:'AI 收集'},
+    {url:'https://ai.example.com',description:'Updated by agent',folderName:'已整理'},
+    {url:'chrome://bookmarks/',title:'Chrome bookmarks'}
+  ],onDuplicate:'update'}});
+  assert.equal(aiImport.statusCode,201);
+  assert.equal(aiImport.json().created.length,2);
+  assert.equal(aiImport.json().updated.length,1);
+  assert.equal(aiImport.json().foldersCreated.length,3);
+  const aiLink=(aiImport.json() as {updated:Array<{url:string;description:string;folderId:string}>}).updated[0];
+  assert.equal(aiLink.url,'https://ai.example.com');
+  assert.equal(aiLink.description,'Updated by agent');
+  const aiRetry=await app.inject({method:'POST',url:'/api/ai/links',headers,payload:{links:[{url:'ai.example.com'}]}});
+  assert.equal(aiRetry.statusCode,201);
+  assert.equal(aiRetry.json().skipped.length,1);
+  assert.equal(aiRetry.json().skipped[0].url,'https://ai.example.com');
+  const libraryExport=await app.inject({method:'GET',url:'/api/export',headers});
+  assert.equal(libraryExport.statusCode,200);
+  assert.equal(libraryExport.json().format,'local-speed-dial/bookmarks');
+  assert.equal(libraryExport.json().scope,'library');
+  assert.equal('updatedAt' in libraryExport.json().settings,false);
+  const aiFolder=(aiImport.json() as {foldersCreated:Array<{id:string;name:string}>}).foldersCreated.find(folder => folder.name === '已整理')!;
+  const folderExport=await app.inject({method:'GET',url:`/api/folders/${aiFolder.id}/export`,headers});
+  assert.equal(folderExport.statusCode,200);
+  assert.equal(folderExport.json().scope,'folder');
+  assert.equal(folderExport.json().folders.length,1);
+  assert.equal(folderExport.json().folders[0].links[0].url,'https://ai.example.com');
+  const restoreStore=new Store(join(mkdtempSync(join(tmpdir(),'speed-dial-import-test-')), 'bookmarks.sqlite'));
+  const restoreApp=createServer({store:restoreStore,token:'test-token'});
+  const imported=await restoreApp.inject({method:'POST',url:'/api/import',headers,payload:{bundle:libraryExport.json(),onDuplicate:'skip'}});
+  assert.equal(imported.statusCode,201);
+  assert.equal(imported.json().created.length,libraryExport.json().folders.reduce((total:number, folder:{links:unknown[]}) => total + folder.links.length, 0));
+  assert.equal(imported.json().foldersCreated.length,libraryExport.json().folders.length);
+  const intoExisting=await restoreApp.inject({method:'POST',url:'/api/import',headers,payload:{bundle:folderExport.json(),targetFolderId:imported.json().foldersCreated[0].id,onDuplicate:'update'}});
+  assert.equal(intoExisting.statusCode,201);
+  assert.equal(intoExisting.json().updated.length,1);
+  await restoreApp.close();
   await app.close();
 });

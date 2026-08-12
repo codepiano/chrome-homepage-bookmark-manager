@@ -6,5 +6,7 @@
   "phase": "executing",
   "activated_at": "2026-08-09T08:07:11.768Z",
   "updated_at": "2026-08-12T20:17:03.062Z",
-  "source": "keyword-detector"
+  "source": "keyword-detector",
+  "iteration": 4,
+  "last_turn_at": "2026-08-12T23:05:48.206Z"
 }

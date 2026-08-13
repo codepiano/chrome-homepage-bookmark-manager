@@ -1,99 +1,166 @@
 # Local Speed Dial
 
-一个本地优先的 Chrome 新标签页书签库。它不读取或回写 Chrome 原生书签；标签、链接、展示设置和点击事件都由本机 SQLite 后端保存。
+一个本地优先的 Chrome 新标签页与书签工作台。
 
-扩展的“浏览记录”读取本机 SQLite 归档，默认按最后访问时间倒序、按日期分组，支持按标题或网址搜索和加载更早记录。点击即可打开，或将某条记录预填到当前标签的“添加链接”中。
+Local Speed Dial 用卡片组织常用网站，同时把浏览历史、自动归集、网页信息补全和批量写入 API 放进同一个本机知识库。数据保存在你自己的电脑上，不需要账号，也不依赖云端同步。
 
-浏览记录同步启用后，扩展会先分批同步现有 Chrome 历史，随后通过后台监听持续写入本机 SQLite。若本机服务暂时未启动，新增记录与 Chrome 的清理通知会先留在扩展本地队列，待服务恢复后重试；清理 Chrome 历史只会在本机库中标记为“已从 Chrome 移除”，不会删除本机归档。
+> 当前发布形态是“本机服务 + Chrome 解压扩展”。它不是单独安装扩展就能运行的纯前端插件。
 
-## 本地运行
+## 适合谁
 
-```sh
-pnpm install
-pnpm dev:server
-pnpm --filter @local-speed-dial/extension build
+- 希望打开新标签页就能直接访问常用网站的人；
+- 想按自己的分类和视觉习惯整理链接，又不想把数据交给第三方服务的人；
+- 希望把 Chrome 历史记录沉淀到本机数据库，继续搜索和归档的人；
+- 想通过脚本、AI Agent 或其他本地工具批量写入书签的人。
+
+## 主要能力
+
+- **新标签页主页**：用文件夹和卡片展示常用链接，点击卡片即可打开；
+- **打开优先，整理按需**：日常浏览保持简洁，编辑、拖动排序和文件夹管理集中在“整理书签”模式；
+- **快速搜索**：按 `⌘ K`（Windows/Linux 为 `Ctrl K`）搜索全部书签，支持键盘选择与打开；
+- **自动归集**：给文件夹设置 `github.com`、`*.github.com` 一类域名规则，已有和新建链接都会自动归类；
+- **浏览历史库**：把 Chrome 历史同步到本机 SQLite，支持搜索、日期分组、域名分组和无限加载；
+- **网页信息补全**：自动获取标题、描述和站点图标；失败时仍可正常保存、打开和手动重试；
+- **个性化外观**：支持浅色、深色和跟随系统，以及列数、卡片宽度、间距、字体、强调色等设置；
+- **离线只读快照**：本机服务暂时不可用时，仍可查看最近一次成功同步的内容；
+- **本机 API**：支持批量新增或更新链接，以及全库/单文件夹 JSON 导入导出。
+
+## 工作方式
+
+```text
+Chrome 新标签页扩展
+        │  Bearer Token，仅通过本机回环地址连接
+        ▼
+Fastify 本机服务 · 127.0.0.1:3721
+        │
+        ▼
+SQLite · data/speed-dial.sqlite
 ```
 
-服务默认监听 `http://127.0.0.1:3721`，首次启动会在 `data/api-token` 生成一个仅限本机 API 使用的配对令牌。将 `apps/extension/dist` 作为“已解压的扩展程序”加载到 `chrome://extensions`，打开新的标签页，点击右上角设置，将该令牌粘贴到“配对令牌”中。
+扩展负责新标签页界面和 Chrome 历史事件，本机服务负责数据、搜索、规则、导入导出和网页信息抓取。SQLite 是数据源，扩展中的缓存只用于离线查看和失败重试。
 
-## 供 AI 或脚本写入
+## 安装
 
-服务提供 `POST /api/ai/links`，用于一次写入 1–100 条书签。它接受文件夹名称（不存在时会自动创建）、会为没有协议的网址补上 `https://`，并默认跳过已存在的同 URL 书签。调用仍只允许本机地址且必须携带同一个配对令牌。
+### 环境要求
 
-```sh
-TOKEN="$(cat data/api-token)"
-curl http://127.0.0.1:3721/api/ai/links \
+- Chrome 或其他支持 Manifest V3 解压扩展的 Chromium 浏览器；
+- Node.js 22 或更高版本；
+- Corepack / pnpm；
+- 使用仓库生命周期脚本时，需要 macOS、`tmux` 和 `lsof`。
+
+### 1. 安装依赖并构建
+
+```bash
+git clone https://github.com/codepiano/chrome-homepage-bookmark-manager.git
+cd chrome-homepage-bookmark-manager
+corepack enable
+./scripts/init.sh
+pnpm build
+```
+
+### 2. 启动本机服务
+
+```bash
+./scripts/start.sh
+./scripts/status.sh
+```
+
+首次启动会创建：
+
+- 数据库：`data/speed-dial.sqlite`
+- 配对令牌：`data/api-token`
+- 服务日志：`.control-panel/api.log`
+
+### 3. 加载 Chrome 扩展
+
+1. 打开 `chrome://extensions/`；
+2. 开启右上角的“开发者模式”；
+3. 点击“加载已解压的扩展程序”；
+4. 选择仓库中的 `apps/extension/dist`；
+5. 打开一个新标签页。
+
+### 4. 完成配对
+
+在新标签页的连接设置中填写：
+
+- API 地址：`http://127.0.0.1:3721`
+- Token：复制 `data/api-token` 文件中的内容
+
+保存并通过连接检查后，即可创建第一个文件夹和链接。
+
+完整操作说明见 [使用手册](docs/USER_GUIDE.md)。
+
+## 常用命令
+
+```bash
+./scripts/start.sh       # 启动服务
+./scripts/status.sh      # 检查服务和健康状态
+./scripts/restart.sh     # 重启服务
+./scripts/stop.sh        # 停止服务
+pnpm build               # 构建服务与扩展
+pnpm test                # 运行测试
+pnpm typecheck           # 类型检查
+```
+
+更新代码后，重新执行 `pnpm install && pnpm build`，重启服务，并在 `chrome://extensions/` 中点击扩展的“重新加载”。
+
+## 批量写入示例
+
+本机 API 可以让脚本或 AI 工具一次写入多条链接：
+
+```bash
+TOKEN="$(tr -d '\r\n' < data/api-token)"
+
+curl -X POST http://127.0.0.1:3721/api/ai/links \
   -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
+  -H "Content-Type: application/json" \
   -d '{
+    "onDuplicate": "skip",
     "links": [
-      {"url":"github.com/openai", "title":"OpenAI GitHub", "folderName":"开发"},
-      {"url":"https://example.com/article", "description":"一篇待读文章", "folderName":"稍后阅读"}
-    ],
-    "onDuplicate":"skip"
+      { "url": "https://github.com", "folderName": "开发工具" },
+      { "url": "example.com", "title": "示例网站", "folderName": "稍后阅读" }
+    ]
   }'
 ```
 
-`onDuplicate` 可为 `skip`（默认，返回在 `skipped`）、`update`（更新标题、描述、显示名、外观并移动到指定文件夹）或 `create`（保留重复条目）。也可传 `folderId` 使用既有文件夹；单条数据不能同时传 `folderId` 和 `folderName`。未指定时写入 `收集箱`，并可用 `defaultFolderName` 改名；`createMissingFolders: false` 会在目标文件夹不存在时拒绝请求。响应包含 `created`、`updated`、`skipped` 和 `foldersCreated`，方便调用方确认实际结果。
+接口会明确返回 `created`、`updated`、`skipped` 和 `foldersCreated`。更多请求、导入导出格式及安全边界见 [API 使用说明](docs/API.md)。
 
-## 书签导入与导出
+## 数据与隐私
 
-导出采用稳定的 JSON 结构 `local-speed-dial/bookmarks`（当前 `version: 1`）。它只包含书签库数据：文件夹、链接、外观覆盖和全局展示设置；不会导出 API 令牌、Chrome 浏览历史、点击记录、抓取缓存或本机绝对路径。
+- 数据默认只保存在当前电脑，不提供账号、遥测或云同步；
+- 服务只监听 `127.0.0.1`，除 `/health` 外的接口都需要本机 Token；
+- 浏览历史权限用于把历史记录同步到本机数据库；
+- 网页信息补全会从你的电脑访问目标网站，目标网站或你配置的代理可能看到这次请求；
+- JSON 导出不会包含 Token、浏览历史、点击记录、元信息缓存或本机绝对路径。
 
-| 范围 | 导出 | 导入 |
-| --- | --- | --- |
-| 全部书签库 | `GET /api/export` | `POST /api/import`，传入 `scope: "library"` 的导出文件 |
-| 单个文件夹 | `GET /api/folders/:id/export` | `POST /api/import`，传入 `scope: "folder"` 的导出文件；可选 `targetFolderId` 导入到指定已有文件夹 |
+详细说明见 [隐私说明](PRIVACY.md)。建议定期备份整个 `data/` 目录，或使用 JSON 导出生成便携备份。
 
-全库导出的主体如下（`folders` 按顺序保存，每个文件夹的 `links` 也按顺序保存）：
+## 开发
 
-```json
-{
-  "format": "local-speed-dial/bookmarks",
-  "version": 1,
-  "scope": "library",
-  "exportedAt": "2026-08-11T10:00:00.000Z",
-  "settings": { "theme": "system", "layout": "grid" },
-  "folders": [{
-    "name": "开发",
-    "autoRules": ["github.com"],
-    "links": [{
-      "url": "https://github.com/openai",
-      "title": "OpenAI GitHub",
-      "description": null,
-      "displayName": null,
-      "appearanceOverride": null
-    }]
-  }]
-}
-```
-
-导入请求包装该导出结构，并默认采用非破坏性的 `skip`：
-
-```sh
-curl http://127.0.0.1:3721/api/import \
-  -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"bundle": {"format":"local-speed-dial/bookmarks","version":1,"scope":"folder","exportedAt":"2026-08-11T10:00:00.000Z","folders":[{"name":"开发","autoRules":[],"links":[{"url":"github.com/openai"}]}]}, "onDuplicate":"skip"}'
-```
-
-`onDuplicate` 同样支持 `skip`、`update`、`create`。默认会创建缺失文件夹，可用 `createMissingFolders: false` 改为严格校验。全库导入默认更新全局展示设置，传 `includeSettings: false` 可只导入书签；单文件夹导入可用 `targetFolderId` 改变落点。导入不会删除已有书签或文件夹。
-
-Chrome 扩展能够稳定覆盖的是**新标签页**。如果希望它成为日常入口，可在 Chrome 的启动设置中选择“打开新标签页”；主页按钮仍由浏览器的主页设置管理。
-
-## 开发和验证
-
-```sh
-pnpm typecheck
-pnpm test
-pnpm build
+```bash
+pnpm dev:server
+pnpm dev:extension
 pnpm lint
+pnpm test
+pnpm typecheck
+pnpm build
 ```
 
-本地数据默认为 `data/speed-dial.sqlite`。备份时先停止服务，再复制整个 `data/` 目录；其中包含数据库及配对令牌，请勿提交或共享。
+项目结构：
 
-## 安全边界
+```text
+apps/extension   Chrome MV3 新标签页扩展（React + Vite）
+apps/server      本机 API 与 SQLite 数据层（Fastify）
+packages/contracts  前后端共享的数据契约
+scripts          启动、停止、状态检查等本机脚本
+docs             使用与 API 文档
+```
 
-- API 只绑定 `127.0.0.1`，除健康检查外都需要 bearer token。
-- 元数据抓取只接受 HTTP(S)，限制重定向、响应大小和超时，并阻止 loopback、私网和 link-local 地址，防止 SSRF；启动时自动采用系统的 HTTP(S) 代理设置。
-- 未配置或暂时连不上本机服务时，扩展展示连接错误；已展示的链接仍可直接打开。
+## 当前边界
+
+- 不提供账号系统或跨设备同步；
+- 不会自动导入 Chrome 原生书签；
+- 扩展接管的是 Chrome 新标签页，不会修改浏览器启动页或主页设置；
+- 当前需要从源码构建并以“解压扩展”方式安装。
+
+如果你准备提交问题，请附上复现步骤、浏览器版本，以及 `.control-panel/api.log` 中与问题相关且已去除敏感信息的日志片段。

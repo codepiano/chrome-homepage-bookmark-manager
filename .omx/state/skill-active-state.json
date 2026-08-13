@@ -1,12 +1,13 @@
 {
   "version": 1,
   "active": true,
-  "skill": "plan",
-  "keyword": "$plan",
-  "phase": "executing",
-  "activated_at": "2026-08-09T08:07:11.768Z",
-  "updated_at": "2026-08-12T20:17:03.062Z",
+  "skill": "cancel",
+  "keyword": "stop",
+  "phase": "planning",
+  "activated_at": "2026-08-13T01:50:13.615Z",
+  "updated_at": "2026-08-13T01:50:13.615Z",
   "source": "keyword-detector",
-  "iteration": 4,
-  "last_turn_at": "2026-08-12T23:05:48.206Z"
+  "session_id": "",
+  "thread_id": "019ff8cf-f3c2-7ca3-8e48-9584b66b5529",
+  "turn_id": "019ff8cf-f46d-7ec2-9050-03a92a112ccb"
 }

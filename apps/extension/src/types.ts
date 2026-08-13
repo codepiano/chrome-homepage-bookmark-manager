@@ -24,6 +24,8 @@ export interface Link {
   position: number;
   clickCount: number;
   lastClickedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface BrowserHistoryPage {

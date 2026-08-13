@@ -41,3 +41,21 @@ test('folder domain rules collect existing links and route newly added links', (
   assert.equal(added.folderId, github.id);
   store.close();
 });
+
+test('inbox is stable, bypasses automatic rules, and supports batch moves', () => {
+  const store = createStore();
+  const github = store.createFolder('GitHub', ['*.github.com']);
+  const inbox = store.ensureInboxFolder();
+  assert.equal(inbox.systemRole, 'inbox');
+  assert.equal(store.ensureInboxFolder().id, inbox.id);
+  assert.equal(store.listFolders()[0]?.id, inbox.id);
+
+  const captured = store.createLink(inbox.id, { url: 'https://github.com/openai', title: 'OpenAI' }, { applyAutoRules: false })!;
+  assert.equal(captured.folderId, inbox.id);
+  store.updateFolder(github.id, { name: 'GitHub projects', autoRules: ['*.github.com'] });
+  assert.equal(store.getLink(captured.id)?.folderId, inbox.id);
+  const [moved] = store.moveLinksToFolder([captured.id], github.id);
+  assert.equal(moved?.folderId, github.id);
+  assert.equal(store.deleteFolder(inbox.id), false);
+  store.close();
+});

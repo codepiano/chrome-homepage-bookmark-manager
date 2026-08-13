@@ -40,6 +40,19 @@ test('API enforces bearer token and records a click', async () => {
   assert.equal(recommendations.statusCode,200);
   assert.equal((recommendations.json() as {recommendations:Array<{id:string;score:number}>}).recommendations[0]?.id,linkId);
   assert.equal((recommendations.json() as {recommendations:Array<{score:number}>}).recommendations[0]?.score > 0, true);
+  const captured=await app.inject({method:'POST',url:'/api/capture',headers,payload:{url:'https://github.com/captured',title:'Captured page'}});
+  assert.equal(captured.statusCode,201);
+  assert.equal(captured.json().status,'created');
+  assert.equal(captured.json().inbox.systemRole,'inbox');
+  assert.equal(captured.json().link.folderId,captured.json().inbox.id);
+  const capturedAgain=await app.inject({method:'POST',url:'/api/capture',headers,payload:{url:'https://github.com/captured',title:'Captured twice'}});
+  assert.equal(capturedAgain.statusCode,200);
+  assert.equal(capturedAgain.json().status,'already-saved');
+  const movedCapture=await app.inject({method:'POST',url:'/api/links/move',headers,payload:{ids:[captured.json().link.id],folderId}});
+  assert.equal(movedCapture.statusCode,200);
+  assert.equal(movedCapture.json().moved[0].folderId,folderId);
+  const deleteInbox=await app.inject({method:'DELETE',url:`/api/folders/${captured.json().inbox.id}`,headers});
+  assert.equal(deleteInbox.statusCode,409);
   const history=await app.inject({method:'POST',url:'/api/history/records',headers,payload:{records:[{url:'https://example.com/article',title:'Example article',lastVisitTime:1_700_000_000_000,visitCount:3,source:'initial'},{url:'https://example.com/article',title:'Updated title',lastVisitTime:1_700_000_001_000,visitCount:4,source:'live'}]}});
   assert.equal(history.statusCode,200);
   assert.equal(history.json().received,2);
@@ -62,7 +75,7 @@ test('API enforces bearer token and records a click', async () => {
   assert.equal(aiImport.statusCode,201);
   assert.equal(aiImport.json().created.length,2);
   assert.equal(aiImport.json().updated.length,1);
-  assert.equal(aiImport.json().foldersCreated.length,3);
+  assert.equal(aiImport.json().foldersCreated.length,2);
   const aiLink=(aiImport.json() as {updated:Array<{url:string;description:string;folderId:string}>}).updated[0];
   assert.equal(aiLink.url,'https://ai.example.com');
   assert.equal(aiLink.description,'Updated by agent');

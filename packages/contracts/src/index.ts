@@ -34,6 +34,7 @@ export const folderSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).max(80),
   autoRules: z.array(z.string()).default([]),
+  systemRole: z.enum(['inbox']).nullable().default(null),
   position: z.number(),
   createdAt: z.string(),
   updatedAt: z.string()

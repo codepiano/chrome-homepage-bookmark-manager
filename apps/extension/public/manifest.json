@@ -2,9 +2,16 @@
   "manifest_version": 3,
   "name": "Local Speed Dial",
   "version": "0.1.0",
-  "description": "本机 API 驱动的新标签页快速访问。",
-  "permissions": ["storage", "tabs", "history", "alarms"],
+  "description": "本机 API 驱动的新标签页快速访问与一键收藏。",
+  "permissions": ["storage", "activeTab", "history", "alarms"],
+  "action": { "default_title": "收藏当前页面到收集箱" },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": { "default": "Alt+Shift+S", "mac": "Alt+Shift+S" },
+      "description": "收藏当前页面到收集箱"
+    }
+  },
   "background": { "service_worker": "background.js", "type": "module" },
-  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "https://*/*", "http://*/*"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "chrome_url_overrides": { "newtab": "newtab.html" }
 }

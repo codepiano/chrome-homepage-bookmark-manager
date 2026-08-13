@@ -3,10 +3,13 @@ import { getConnection } from './api';
 type HistoryRecord = { url: string; title: string | null; lastVisitTime: number; visitCount: number; source: 'initial' | 'live' };
 type BackfillState = { endTime?: number; complete?: boolean };
 type HistoryRemoval = { allHistory: boolean; urls?: string[] };
+type CaptureRecord = { url: string; title: string | null };
+type CaptureResponse = { status: 'created' | 'already-saved' };
 
 const OUTBOX_KEY = 'historySyncOutbox';
 const REMOVAL_OUTBOX_KEY = 'historyRemovalSyncOutbox';
 const BACKFILL_KEY = 'historyBackfillState';
+const CAPTURE_OUTBOX_KEY = 'captureOutbox';
 const ALARM = 'history-sync';
 const BATCH_SIZE = 100;
 let syncing = false;
@@ -16,11 +19,31 @@ function toRecord(item: chrome.history.HistoryItem, source: HistoryRecord['sourc
   return { url: item.url.slice(0, 4096), title: item.title?.slice(0, 10_000) || null, lastVisitTime: Math.floor(item.lastVisitTime), visitCount: Math.max(0, item.visitCount ?? 0), source };
 }
 
-async function post(path: string, body: unknown) {
+async function post<T = void>(path: string, body: unknown): Promise<T> {
   const { apiBaseUrl, token } = await getConnection();
   if (!token) throw new Error('Local service is not paired');
   const response = await fetch(`${apiBaseUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
   if (!response.ok) throw new Error(`Local service returned ${response.status}`);
+  return response.status === 204 ? undefined as T : response.json() as Promise<T>;
+}
+
+async function readCaptureOutbox() {
+  const value = await chrome.storage.local.get(CAPTURE_OUTBOX_KEY);
+  return (value[CAPTURE_OUTBOX_KEY] as CaptureRecord[] | undefined) ?? [];
+}
+async function enqueueCapture(record: CaptureRecord) {
+  const outbox = await readCaptureOutbox();
+  await chrome.storage.local.set({ [CAPTURE_OUTBOX_KEY]: [...outbox.filter((item) => item.url !== record.url), record] });
+}
+async function flushCaptureOutbox() {
+  let outbox = await readCaptureOutbox();
+  while (outbox.length) {
+    try { await post('/api/capture', outbox[0]); }
+    catch { return false; }
+    outbox = outbox.slice(1);
+    await chrome.storage.local.set({ [CAPTURE_OUTBOX_KEY]: outbox });
+  }
+  return true;
 }
 
 async function readOutbox() {
@@ -77,6 +100,7 @@ async function sync() {
   if (syncing) return;
   syncing = true;
   try {
+    if (!await flushCaptureOutbox()) return;
     if (!await flushRemovalOutbox()) return;
     if (!await flushOutbox()) return;
     for (let page = 0; page < 5; page += 1) if (await syncBackfillPage()) break;
@@ -84,6 +108,33 @@ async function sync() {
 }
 
 function schedule() { chrome.alarms.create(ALARM, { periodInMinutes: 1 }); void sync(); }
+async function showCaptureFeedback(tabId: number | undefined, text: string, title: string, color: string) {
+  if (tabId === undefined) return;
+  await Promise.all([
+    chrome.action.setBadgeText({ tabId, text }),
+    chrome.action.setBadgeBackgroundColor({ tabId, color }),
+    chrome.action.setTitle({ tabId, title }),
+  ]);
+  setTimeout(() => { void chrome.action.setBadgeText({ tabId, text: '' }); void chrome.action.setTitle({ tabId, title: '收藏当前页面到收集箱' }); }, 2800);
+}
+chrome.action.onClicked.addListener((tab) => {
+  void (async () => {
+    const url = tab.url?.trim();
+    if (!url || !/^(https?:|chrome:)/i.test(url) || url.startsWith('chrome-extension://')) {
+      await showCaptureFeedback(tab.id, '!', '这个页面不能收藏', '#b42318');
+      return;
+    }
+    await chrome.action.setBadgeText({ tabId: tab.id, text: '' });
+    const record = { url, title: tab.title?.trim() || null };
+    try {
+      const result = await post<CaptureResponse>('/api/capture', record);
+      await showCaptureFeedback(tab.id, result.status === 'created' ? '✓' : '=', result.status === 'created' ? '已收藏到收集箱' : '这个页面已经收藏', result.status === 'created' ? '#198754' : '#596579');
+    } catch {
+      await enqueueCapture(record);
+      await showCaptureFeedback(tab.id, '…', '本机服务离线，已暂存并等待自动保存', '#9a6700');
+    }
+  })();
+});
 chrome.runtime.onInstalled.addListener(schedule);
 chrome.runtime.onStartup.addListener(schedule);
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) void sync(); });

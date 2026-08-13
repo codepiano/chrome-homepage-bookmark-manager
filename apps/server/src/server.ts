@@ -41,7 +41,7 @@ const exportedLink = z.object({
   displayName: nullableText.optional(),
   appearanceOverride: appearanceOverride.nullable().optional(),
 }).strict();
-const exportedFolder = z.object({ name: z.string().trim().min(1).max(120), autoRules: z.array(autoRule).max(50).default([]), links: z.array(exportedLink).max(10_000) }).strict();
+const exportedFolder = z.object({ name: z.string().trim().min(1).max(120), autoRules: z.array(autoRule).max(50).default([]), systemRole: z.enum(['inbox']).optional(), links: z.array(exportedLink).max(10_000) }).strict();
 const exportBundle = z.object({
   format: z.literal('local-speed-dial/bookmarks'),
   version: z.literal(1),
@@ -64,10 +64,11 @@ const importInput = z.object({
 });
 const browserHistoryList = z.object({ query:z.string().trim().max(200).optional(), cursorTime:z.coerce.number().int().nonnegative().optional(), cursorUrl:z.string().url().max(4096).optional(), limit:z.coerce.number().int().min(1).max(100).default(50) }).strict().refine(value => (value.cursorTime !== undefined) === (value.cursorUrl !== undefined), 'cursorTime and cursorUrl must be provided together');
 function parse<T>(schema: z.ZodType<T>, value: unknown): T { return schema.parse(value); }
-function exportFolder(store: Store, folder: { name: string; autoRules: string[]; id: string }) {
+function exportFolder(store: Store, folder: { name: string; autoRules: string[]; systemRole: 'inbox' | null; id: string }) {
   return {
     name: folder.name,
     autoRules: folder.autoRules,
+    ...(folder.systemRole ? { systemRole: folder.systemRole } : {}),
     links: store.listLinks(folder.id).map(({ url, title, description, displayName, appearanceOverride }) => ({ url, title, description, displayName, appearanceOverride })),
   };
 }
@@ -77,6 +78,11 @@ function importLinks(store: Store, input: z.infer<typeof importInput>) {
   if (input.targetFolderId && !targetFolder) throw new Error(`Unknown folder: ${input.targetFolderId}`);
   for (const sourceFolder of input.bundle.folders) {
     let folder = targetFolder;
+    if (!folder && sourceFolder.systemRole === 'inbox') {
+      const existingInbox = store.listFolders().find(item => item.systemRole === 'inbox');
+      folder = store.ensureInboxFolder(sourceFolder.name);
+      if (!existingInbox) foldersCreated.push(folder);
+    }
     if (!folder) folder = store.findFolderByName(sourceFolder.name);
     if (!folder) {
       if (!input.createMissingFolders) throw new Error(`Folder not found: ${sourceFolder.name}`);
@@ -137,13 +143,24 @@ export function createServer({ store, token }: ServerOptions) {
     return { format: 'local-speed-dial/bookmarks', version: 1, scope: 'library', exportedAt: new Date().toISOString(), settings: exportedSettings, folders: store.listFolders().map(folder => exportFolder(store, folder)) };
   });
   app.post('/api/folders', async (request, reply) => { const body=parse(folderInput,request.body); return reply.code(201).send(store.createFolder(body.name, body.autoRules)); });
-  app.patch('/api/folders/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); const body=parse(folderInput,request.body); const result=store.updateFolder(id,body); return result ? { ...result.folder, autoCollected: result.moved } : notFound(reply); });
-  app.delete('/api/folders/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); return store.deleteFolder(id) ? reply.code(204).send() : notFound(reply); });
+  app.patch('/api/folders/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); const body=parse(folderInput,request.body); const folder=store.getFolder(id); if (folder?.systemRole === 'inbox' && body.autoRules.length) return reply.code(400).send({ error:{ code:'invalid_request', message:'收集箱不能设置自动归集规则' } }); const result=store.updateFolder(id,body); return result ? { ...result.folder, autoCollected: result.moved } : notFound(reply); });
+  app.delete('/api/folders/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); const folder=store.getFolder(id); if (folder?.systemRole === 'inbox') return reply.code(409).send({ error:{ code:'system_folder', message:'收集箱不能删除' } }); return store.deleteFolder(id) ? reply.code(204).send() : notFound(reply); });
   app.post('/api/folders/reorder', async request => store.reorderFolders(parse(z.object({ids:z.array(id)}),request.body).ids));
   app.get('/api/folders/:id/export', async (request, reply) => { const { id } = parse(uuidParams, request.params); const folder = store.getFolder(id); return folder ? { format: 'local-speed-dial/bookmarks', version: 1, scope: 'folder', exportedAt: new Date().toISOString(), folders: [exportFolder(store, folder)] } : notFound(reply); });
   app.get('/api/folders/:folderId/links', async (request,reply) => { const {folderId}=parse(z.object({folderId:id}),request.params); return store.getFolder(folderId) ? store.listLinks(folderId) : notFound(reply); });
   app.get('/api/links/duplicates', async request => { const { url } = parse(z.object({ url: linkUrl }), request.query); return store.findLinksByUrl(url); });
   app.get('/api/recommendations', async () => ({ recommendations: store.listRecommendations() }));
+  app.post('/api/capture', async (request, reply) => {
+    const body = parse(z.object({ url:linkUrl, title:nullableText.optional() }).strict(), request.body);
+    const inbox = store.ensureInboxFolder();
+    const duplicate = store.findLinksByUrl(body.url)[0];
+    if (duplicate) return { status:'already-saved', link:duplicate, inbox };
+    const link = store.createLink(inbox.id, body, { applyAutoRules:false });
+    if (!link) throw new Error('Failed to capture link');
+    if (/^https?:\/\//i.test(link.url)) refreshMetadata(store, link.id, link.url);
+    else store.setMetadata(link.id, { status:'succeeded', error:null });
+    return reply.code(201).send({ status:'created', link, inbox });
+  });
   app.post('/api/ai/links', async (request, reply) => {
     const body = parse(aiIngestInput, request.body);
     const created: unknown[] = [], updated: unknown[] = [], skipped: Array<{ url: string; linkId: string }> = [], foldersCreated: unknown[] = [];
@@ -202,6 +219,7 @@ export function createServer({ store, token }: ServerOptions) {
   });
   app.patch('/api/links/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); const body=parse(z.object({url:linkUrl.optional(),title:nullableText.optional(),description:nullableText.optional(),faviconUrl:httpUrl.nullable().optional(),displayName:nullableText.optional(),appearanceOverride:appearanceOverride.nullable().optional()}).strict(),request.body); const link=store.updateLink(id,body); return link ?? notFound(reply); });
   app.delete('/api/links/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); return store.deleteLink(id) ? reply.code(204).send() : notFound(reply); });
+  app.post('/api/links/move', async request => { const body=parse(z.object({ ids:z.array(id).min(1).max(1_000), folderId:id }).strict(),request.body); return { moved:store.moveLinksToFolder(body.ids,body.folderId) }; });
   app.post('/api/links/reorder', async request => { const body=parse(z.object({items:z.array(z.object({id,folderId:id})).min(1)}),request.body); store.reorderLinks(body.items); return { ok:true }; });
   app.post('/api/links/:id/clicks', async (request,reply) => { const {id}=parse(uuidParams,request.params); const link=store.recordClick(id); return link ?? notFound(reply); });
   app.post('/api/links/:id/refresh-metadata', async (request,reply) => { const {id}=parse(uuidParams,request.params); const link=store.getLink(id); if (!link) return notFound(reply); try { const metadata=await fetchMetadata(link.url); return store.setMetadata(id,{...metadata,status:'succeeded',error:null}); } catch (error) { const message=error instanceof MetadataError ? error.message : 'Metadata request failed'; return store.setMetadata(id,{status:'failed',error:message}); } });

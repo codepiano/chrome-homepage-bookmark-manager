@@ -5,6 +5,7 @@ export interface Folder {
   id: string;
   name: string;
   autoRules: string[];
+  systemRole: 'inbox' | null;
   position: number;
   linkCount?: number;
 }

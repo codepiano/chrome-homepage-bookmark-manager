@@ -63,6 +63,30 @@ curl -X POST http://127.0.0.1:3721/api/ai/links \
 
 网页标题、描述或图标抓取是尽力而为的补充步骤。目标网站返回 403、429 或超时，不代表书签写入失败。
 
+## 捕获当前页面
+
+扩展工具栏按钮使用 `POST /api/capture`。接口会确保系统收集箱存在，并绕过自动域名归集规则：
+
+```bash
+curl -X POST http://127.0.0.1:3721/api/capture \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com/article","title":"示例文章"}'
+```
+
+首次捕获返回 `201` 和 `status: "created"`；URL 已存在时返回 `200` 和 `status: "already-saved"`，不会把已经整理好的链接重新移回收集箱。
+
+## 批量移动
+
+```bash
+curl -X POST http://127.0.0.1:3721/api/links/move \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"ids":["链接 UUID"],"folderId":"目标文件夹 UUID"}'
+```
+
+一次最多移动 1,000 条，响应的 `moved` 数组包含移动后的链接。
+
 ## 导入与导出
 
 便携格式标识为 `local-speed-dial/bookmarks`，当前版本为 `1`。
@@ -122,6 +146,8 @@ curl -X POST http://127.0.0.1:3721/api/import \
 | `GET /api/folders/:folderId/links` | 获取一个文件夹中的链接 |
 | `GET /api/settings` | 获取页面设置 |
 | `POST /api/ai/links` | 批量写入链接 |
+| `POST /api/capture` | 捕获页面到系统收集箱 |
+| `POST /api/links/move` | 批量移动链接 |
 | `GET /api/links/duplicates?url=...` | 查询规范化 URL 的重复项 |
 | `GET /api/recommendations` | 获取常用和最近链接 |
 | `GET /api/history` | 搜索和分页读取本机历史库 |

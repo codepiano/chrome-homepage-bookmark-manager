@@ -9,7 +9,7 @@ type SqlRow = Record<string, unknown>;
 const now = () => new Date().toISOString();
 
 function folderFrom(row: SqlRow): Folder {
-  return { id: String(row.id), name: String(row.name), autoRules: jsonStringArray(row.auto_rules_json), position: Number(row.position), createdAt: String(row.created_at), updatedAt: String(row.updated_at), linkCount: Number(row.link_count ?? 0) };
+  return { id: String(row.id), name: String(row.name), autoRules: jsonStringArray(row.auto_rules_json), systemRole: row.system_role === 'inbox' ? 'inbox' : null, position: Number(row.position), createdAt: String(row.created_at), updatedAt: String(row.updated_at), linkCount: Number(row.link_count ?? 0) };
 }
 function jsonStringArray(value: unknown): string[] {
   if (typeof value !== 'string' || !value) return [];
@@ -45,7 +45,7 @@ export class Store {
   private migrate() {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS folders (id TEXT PRIMARY KEY, name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120), auto_rules_json TEXT NOT NULL DEFAULT '[]', position REAL NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS folders (id TEXT PRIMARY KEY, name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 120), auto_rules_json TEXT NOT NULL DEFAULT '[]', system_role TEXT CHECK(system_role IS NULL OR system_role = 'inbox'), position REAL NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS links (id TEXT PRIMARY KEY, folder_id TEXT NOT NULL REFERENCES folders(id) ON DELETE CASCADE, url TEXT NOT NULL, title TEXT, description TEXT, favicon_url TEXT, display_name TEXT, metadata_status TEXT NOT NULL DEFAULT 'pending' CHECK(metadata_status IN ('pending','succeeded','failed')), metadata_error TEXT, metadata_fetched_at TEXT, appearance_override_json TEXT, position REAL NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS links_folder_position ON links(folder_id, position, id);
       CREATE TABLE IF NOT EXISTS click_events (id TEXT PRIMARY KEY, link_id TEXT NOT NULL REFERENCES links(id) ON DELETE CASCADE, clicked_at TEXT NOT NULL);
@@ -58,6 +58,8 @@ export class Store {
     `);
     const folderColumns = this.db.prepare('PRAGMA table_info(folders)').all() as SqlRow[];
     if (!folderColumns.some(column => column.name === 'auto_rules_json')) this.db.exec("ALTER TABLE folders ADD COLUMN auto_rules_json TEXT NOT NULL DEFAULT '[]'");
+    if (!folderColumns.some(column => column.name === 'system_role')) this.db.exec("ALTER TABLE folders ADD COLUMN system_role TEXT CHECK(system_role IS NULL OR system_role = 'inbox')");
+    this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS folders_system_role ON folders(system_role) WHERE system_role IS NOT NULL");
     const existing = this.db.prepare('SELECT id FROM settings WHERE id = 1').get();
     if (!existing) this.db.prepare('INSERT INTO settings (id, value_json, updated_at) VALUES (1, ?, ?)').run(JSON.stringify(DEFAULT_SETTINGS), now());
   }
@@ -68,9 +70,22 @@ export class Store {
   listFolders() { return (this.db.prepare('SELECT f.*, COUNT(l.id) AS link_count FROM folders f LEFT JOIN links l ON l.folder_id=f.id GROUP BY f.id ORDER BY f.position, f.id').all() as SqlRow[]).map(folderFrom); }
   getFolder(id: string) { const row = this.db.prepare('SELECT f.*, COUNT(l.id) AS link_count FROM folders f LEFT JOIN links l ON l.folder_id=f.id WHERE f.id=? GROUP BY f.id').get(id) as SqlRow | undefined; return row && folderFrom(row); }
   findFolderByName(name: string) { const row = this.db.prepare('SELECT f.*, COUNT(l.id) AS link_count FROM folders f LEFT JOIN links l ON l.folder_id=f.id WHERE f.name=? COLLATE NOCASE GROUP BY f.id ORDER BY f.position, f.id LIMIT 1').get(name) as SqlRow | undefined; return row && folderFrom(row); }
+  ensureInboxFolder(name = '收集箱') {
+    const roleRow = this.db.prepare("SELECT f.*, COUNT(l.id) AS link_count FROM folders f LEFT JOIN links l ON l.folder_id=f.id WHERE f.system_role='inbox' GROUP BY f.id LIMIT 1").get() as SqlRow | undefined;
+    if (roleRow) return folderFrom(roleRow);
+    const named = this.findFolderByName(name);
+    if (named) {
+      this.db.prepare("UPDATE folders SET system_role='inbox', auto_rules_json='[]', updated_at=? WHERE id=?").run(now(), named.id);
+      return this.getFolder(named.id)!;
+    }
+    const timestamp = now(), id = randomUUID();
+    const row = this.db.prepare('SELECT COALESCE(MIN(position), 0) AS min_position FROM folders').get() as SqlRow;
+    this.db.prepare("INSERT INTO folders (id,name,auto_rules_json,system_role,position,created_at,updated_at) VALUES (?, ?, '[]', 'inbox', ?, ?, ?)").run(id, name, Number(row.min_position) - 1, timestamp, timestamp);
+    return this.getFolder(id)!;
+  }
   createFolder(name: string, autoRules: string[] = []) { const timestamp = now(), id = randomUUID(); const row = this.db.prepare('SELECT COALESCE(MAX(position), -1) AS max_position FROM folders').get() as SqlRow; this.db.prepare('INSERT INTO folders (id,name,auto_rules_json,position,created_at,updated_at) VALUES (?, ?, ?, ?, ?, ?)').run(id, name, JSON.stringify(autoRules), Number(row.max_position) + 1, timestamp, timestamp); return this.getFolder(id)!; }
   updateFolder(id: string, fields: { name: string; autoRules: string[] }) { const change = this.db.prepare('UPDATE folders SET name=?, auto_rules_json=?, updated_at=? WHERE id=?').run(fields.name, JSON.stringify(fields.autoRules), now(), id); if (!change.changes) return null; const folder = this.getFolder(id)!; const moved = this.applyAutoRules(); return { folder, moved }; }
-  deleteFolder(id: string) { return this.db.prepare('DELETE FROM folders WHERE id=?').run(id).changes > 0; }
+  deleteFolder(id: string) { return this.db.prepare('DELETE FROM folders WHERE id=? AND system_role IS NULL').run(id).changes > 0; }
   reorderFolders(ids: string[]) { this.transaction(() => { const count = (this.db.prepare('SELECT COUNT(*) AS count FROM folders').get() as SqlRow).count; if (ids.length !== Number(count) || new Set(ids).size !== ids.length) throw new Error('Folder reorder must include every folder exactly once'); for (const [position, id] of ids.entries()) if (this.db.prepare('UPDATE folders SET position=?, updated_at=? WHERE id=?').run(position, now(), id).changes !== 1) throw new Error('Unknown folder'); }); return this.listFolders(); }
   listLinks(folderId: string) { return (this.db.prepare(`SELECT l.*, COUNT(c.id) AS click_count, MAX(c.clicked_at) AS last_clicked_at FROM links l LEFT JOIN click_events c ON c.link_id=l.id WHERE l.folder_id=? GROUP BY l.id ORDER BY l.position, l.id`).all(folderId) as SqlRow[]).map(linkFrom); }
   findLinksByUrl(url: string) { return (this.db.prepare(`SELECT l.*, COUNT(c.id) AS click_count, MAX(c.clicked_at) AS last_clicked_at FROM links l LEFT JOIN click_events c ON c.link_id=l.id WHERE l.url=? GROUP BY l.id ORDER BY l.created_at DESC`).all(url) as SqlRow[]).map(linkFrom); }
@@ -99,11 +114,27 @@ export class Store {
     this.db.prepare('UPDATE links SET folder_id=?, position=?, updated_at=? WHERE id=?').run(folderId, Number(max.max_position) + 1, now(), id);
     return this.getLink(id)!;
   }
-  private applyAutoRules() { let moved = 0; for (const folder of this.listFolders()) for (const link of this.listLinks(folder.id)) { const target = this.folderForUrl(link.url, folder.id); if (target !== folder.id && this.moveLinkToFolder(link.id, target)) moved++; } return moved; }
-  createLink(folderId: string, fields: { url: string; title?: string | null; description?: string | null; displayName?: string | null; appearanceOverride?: LinkAppearance | null }) { if (!this.getFolder(folderId)) return null; const targetFolderId = this.folderForUrl(fields.url, folderId); const timestamp=now(), id=randomUUID(); const max = this.db.prepare('SELECT COALESCE(MAX(position), -1) AS max_position FROM links WHERE folder_id=?').get(targetFolderId) as SqlRow; this.db.prepare('INSERT INTO links (id,folder_id,url,title,description,display_name,appearance_override_json,position,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, targetFolderId, fields.url, fields.title ?? null, fields.description ?? null, fields.displayName ?? null, fields.appearanceOverride ? JSON.stringify(fields.appearanceOverride) : null, Number(max.max_position)+1, timestamp, timestamp); return this.getLink(id)!; }
-  updateLink(id: string, fields: Record<string, unknown>) { const allowed: Record<string, string> = { url:'url', title:'title', description:'description', faviconUrl:'favicon_url', displayName:'display_name', appearanceOverride:'appearance_override_json' }; const values: Array<string | null>=[]; const changes: string[]=[]; for (const [key, column] of Object.entries(allowed)) if (key in fields) { changes.push(`${column}=?`); values.push(key === 'appearanceOverride' && fields[key] !== null ? JSON.stringify(fields[key]) : typeof fields[key] === 'string' ? fields[key] : null); } if (!changes.length) return this.getLink(id); values.push(now(), id); const result=this.db.prepare(`UPDATE links SET ${changes.join(', ')}, updated_at=? WHERE id=?`).run(...values); if (!result.changes) return null; const updated = this.getLink(id)!; if ('url' in fields) this.moveLinkToFolder(id, this.folderForUrl(updated.url, updated.folderId)); return this.getLink(id)!; }
+  private applyAutoRules() { let moved = 0; for (const folder of this.listFolders()) { if (folder.systemRole === 'inbox') continue; for (const link of this.listLinks(folder.id)) { const target = this.folderForUrl(link.url, folder.id); if (target !== folder.id && this.moveLinkToFolder(link.id, target)) moved++; } } return moved; }
+  createLink(folderId: string, fields: { url: string; title?: string | null; description?: string | null; displayName?: string | null; appearanceOverride?: LinkAppearance | null }, options: { applyAutoRules?: boolean } = {}) { const folder=this.getFolder(folderId); if (!folder) return null; const applyAutoRules = options.applyAutoRules ?? folder.systemRole !== 'inbox'; const targetFolderId = applyAutoRules ? this.folderForUrl(fields.url, folderId) : folderId; const timestamp=now(), id=randomUUID(); const max = this.db.prepare('SELECT COALESCE(MAX(position), -1) AS max_position FROM links WHERE folder_id=?').get(targetFolderId) as SqlRow; this.db.prepare('INSERT INTO links (id,folder_id,url,title,description,display_name,appearance_override_json,position,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)').run(id, targetFolderId, fields.url, fields.title ?? null, fields.description ?? null, fields.displayName ?? null, fields.appearanceOverride ? JSON.stringify(fields.appearanceOverride) : null, Number(max.max_position)+1, timestamp, timestamp); return this.getLink(id)!; }
+  updateLink(id: string, fields: Record<string, unknown>) { const allowed: Record<string, string> = { url:'url', title:'title', description:'description', faviconUrl:'favicon_url', displayName:'display_name', appearanceOverride:'appearance_override_json' }; const values: Array<string | null>=[]; const changes: string[]=[]; for (const [key, column] of Object.entries(allowed)) if (key in fields) { changes.push(`${column}=?`); values.push(key === 'appearanceOverride' && fields[key] !== null ? JSON.stringify(fields[key]) : typeof fields[key] === 'string' ? fields[key] : null); } if (!changes.length) return this.getLink(id); values.push(now(), id); const result=this.db.prepare(`UPDATE links SET ${changes.join(', ')}, updated_at=? WHERE id=?`).run(...values); if (!result.changes) return null; const updated = this.getLink(id)!; const folder = this.getFolder(updated.folderId); if ('url' in fields && folder?.systemRole !== 'inbox') this.moveLinkToFolder(id, this.folderForUrl(updated.url, updated.folderId)); return this.getLink(id)!; }
   setMetadata(id: string, metadata: { title?: string | null; description?: string | null; faviconUrl?: string | null; status: MetadataStatus; error?: string | null }) { const result=this.db.prepare('UPDATE links SET title=COALESCE(?,title), description=COALESCE(?,description), favicon_url=COALESCE(?,favicon_url), metadata_status=?, metadata_error=?, metadata_fetched_at=?, updated_at=? WHERE id=?').run(metadata.title ?? null, metadata.description ?? null, metadata.faviconUrl ?? null, metadata.status, metadata.error ?? null, now(), now(), id); return result.changes ? this.getLink(id)! : null; }
   deleteLink(id: string) { return this.db.prepare('DELETE FROM links WHERE id=?').run(id).changes > 0; }
+  moveLinksToFolder(ids: string[], folderId: string) {
+    return this.transaction(() => {
+      if (!this.getFolder(folderId)) throw new Error(`Unknown folder: ${folderId}`);
+      const uniqueIds = [...new Set(ids)];
+      if (uniqueIds.length !== ids.length) throw new Error('Link move contains duplicate IDs');
+      let position = Number((this.db.prepare('SELECT COALESCE(MAX(position), -1) AS max_position FROM links WHERE folder_id=?').get(folderId) as SqlRow).max_position) + 1;
+      const moved: Link[] = [];
+      for (const id of uniqueIds) {
+        if (!this.getLink(id)) throw new Error(`Unknown link: ${id}`);
+        this.db.prepare('UPDATE links SET folder_id=?, position=?, updated_at=? WHERE id=?').run(folderId, position, now(), id);
+        position += 1;
+        moved.push(this.getLink(id)!);
+      }
+      return moved;
+    });
+  }
   reorderLinks(items: Array<{ id: string; folderId: string }>) { this.transaction(() => { const sourceIds=items.map(i=>i.id); if (!sourceIds.length || new Set(sourceIds).size!==sourceIds.length) throw new Error('Link reorder contains duplicate IDs'); const placeholders=sourceIds.map(()=>'?').join(','); const found=this.db.prepare(`SELECT id FROM links WHERE id IN (${placeholders})`).all(...sourceIds) as SqlRow[]; if (found.length !== items.length) throw new Error('Unknown link'); for (const [position,item] of items.entries()) { if (!this.getFolder(item.folderId)) throw new Error('Unknown folder'); this.db.prepare('UPDATE links SET folder_id=?, position=?, updated_at=? WHERE id=?').run(item.folderId, position, now(), item.id); } }); }
   recordClick(id: string) { if (!this.getLink(id)) return null; const clickedAt=now(); this.db.prepare('INSERT INTO click_events VALUES (?, ?, ?)').run(randomUUID(),id,clickedAt); return this.getLink(id)!; }
   recordBrowserHistory(records: BrowserHistoryRecord[]) {

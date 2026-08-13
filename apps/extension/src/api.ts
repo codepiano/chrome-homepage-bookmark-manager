@@ -59,6 +59,7 @@ export const api = {
   refreshMetadata: (id: string) => request<Link>(`/api/links/${id}/refresh-metadata`, { method: 'POST' }),
   duplicates: (url: string) => request<Link[]>(`/api/links/duplicates?url=${encodeURIComponent(url)}`),
   recommendations: () => request<{ recommendations: Recommendation[] }>('/api/recommendations'),
+  moveLinks: (ids: string[], folderId: string) => request<{ moved: Link[] }>('/api/links/move', { method: 'POST', body: JSON.stringify({ ids, folderId }) }),
   history: (query = '', cursor?: { time: number; url: string }) => { const params = new URLSearchParams({ query, limit: '50' }); if (cursor) { params.set('cursorTime', String(cursor.time)); params.set('cursorUrl', cursor.url); } return request<{ items: BrowserHistoryPage[]; nextCursor: { time: number; url: string } | null }>(`/api/history?${params}`); },
   click: (id: string) => request<Link>(`/api/links/${id}/clicks`, { method: 'POST' }),
   settings: () => request<Settings>('/api/settings'),

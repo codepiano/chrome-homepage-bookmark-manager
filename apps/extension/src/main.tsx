@@ -39,20 +39,30 @@ function BrowseCard({ link, settings, onRecord, onRetry }: { link: Link; setting
   return <article style={cardStyle(link)} className={`link-card link-card-open ${link.metadataStatus === 'failed' ? 'has-metadata-action' : ''} ${settings.layout}`}><a className="card-link" href={link.url} aria-label={`打开 ${title}`} onClick={onRecord}><LinkContents link={link} settings={settings} /></a>{link.metadataStatus === 'failed' && <button type="button" className="retry-metadata" title={link.metadataError ?? '重新抓取标题、简介和图标'} onClick={onRetry}>重新抓取</button>}</article>;
 }
 
-function SortableTab({ folder, active, onSelect }: { folder: Folder; active: boolean; onSelect(): void }) {
+function SortableTab({ folder, active, disabled = false, onSelect }: { folder: Folder; active: boolean; disabled?: boolean; onSelect(): void }) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: folder.id });
   return <div ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }} className="tab-wrap">
-    <button className={`tab ${active ? 'active' : ''}`} onClick={onSelect} {...attributes} {...listeners} aria-label={`${folder.name}，可拖动排序`}>{folder.name}</button>
+    <button className={`tab ${active ? 'active' : ''}`} disabled={disabled} onClick={onSelect} {...attributes} {...listeners} aria-label={`${folder.name}，可拖动排序`}>{folder.name}</button>
   </div>;
 }
 
-function SortableCard({ link, settings, onOpen, onEdit }: { link: Link; settings: Settings; onOpen(): void; onEdit(): void }) {
+function SortableCard({ link, settings, selectable = false, selected = false, disabled = false, onToggle, onOpen, onEdit }: { link: Link; settings: Settings; selectable?: boolean; selected?: boolean; disabled?: boolean; onToggle?(): void; onOpen(): void; onEdit(): void }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: link.id });
   const title = displayTitle(link);
-  return <article ref={setNodeRef} style={{ ...cardStyle(link), transform: CSS.Transform.toString(transform), transition }} className={`link-card organize-card ${settings.layout} ${isDragging ? 'dragging' : ''}`} {...attributes}>
-    <button type="button" className="organize-open" onClick={onOpen} aria-label={`打开 ${title}`}><LinkContents link={link} settings={settings} /></button>
-    <div className="card-actions"><button type="button" className="card-action" onClick={onEdit}>编辑</button><button type="button" className="card-action drag-handle" {...listeners} aria-label={`拖动 ${title} 排序`}>拖动</button></div>
+  return <article ref={setNodeRef} style={{ ...cardStyle(link), transform: CSS.Transform.toString(transform), transition }} className={`link-card organize-card ${settings.layout} ${selectable ? 'selectable-card' : ''} ${selected ? 'selected' : ''} ${isDragging ? 'dragging' : ''}`}>
+    {selectable && <label className="card-select"><input type="checkbox" checked={selected} disabled={disabled} onChange={onToggle} aria-label={`选择 ${title}`} /><span>选择</span></label>}
+    <button type="button" className="organize-open" disabled={disabled} onClick={onOpen} aria-label={`打开 ${title}`}><LinkContents link={link} settings={settings} /></button>
+    <div className="card-actions"><button type="button" className="card-action" disabled={disabled} onClick={onEdit}>编辑</button><button type="button" className="card-action drag-handle" disabled={disabled} {...attributes} {...listeners} aria-label={`拖动 ${title} 排序`}>拖动</button></div>
   </article>;
+}
+
+function BatchOrganizer({ selectedCount, totalCount, targetFolderId, folders, busy, onToggleAll, onTargetChange, onMove, onCreateFolder }: { selectedCount: number; totalCount: number; targetFolderId: string; folders: Folder[]; busy: boolean; onToggleAll(): void; onTargetChange(id: string): void; onMove(): void; onCreateFolder(): void }) {
+  const allSelected = totalCount > 0 && selectedCount === totalCount;
+  return <section className="batch-organizer" aria-label="批量整理收集箱" aria-busy={busy}>
+    <div className="batch-summary"><strong>{selectedCount ? `已选择 ${selectedCount} 项` : '选择要整理的链接'}</strong><span>{totalCount ? '移动后会从收集箱消失' : '用浏览器工具栏按钮收藏当前页面'}</span></div>
+    {totalCount > 0 && <button type="button" className="quiet-button batch-select-all" disabled={busy} onClick={onToggleAll}>{allSelected ? '取消全选' : '全选'}</button>}
+    {folders.length ? <><label className="batch-target"><span>移动到</span><select value={targetFolderId} disabled={busy} onChange={(event) => onTargetChange(event.target.value)}>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label><button type="button" className="primary batch-move" disabled={!selectedCount || !targetFolderId || busy} onClick={onMove}>{busy ? '正在移动…' : selectedCount ? `移动 ${selectedCount} 项` : '移动所选链接'}</button></> : <button type="button" className="primary batch-move" disabled={busy} onClick={onCreateFolder}>先创建目标标签</button>}
+  </section>;
 }
 
 function Toast({ children }: { children: React.ReactNode }) { return <p className="toast" role="status">{children}</p>; }
@@ -100,13 +110,20 @@ function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [offlineSnapshot, setOfflineSnapshot] = useState(false);
+  const [selectedLinkIds, setSelectedLinkIds] = useState<Set<string>>(() => new Set());
+  const [batchTargetId, setBatchTargetId] = useState('');
+  const [batchMoving, setBatchMoving] = useState(false);
   const clickRetryQueue = useRef(new Set<string>());
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
   const selectedFolder = folders.find((folder) => folder.id === selectedFolderId) ?? null;
+  const isInbox = selectedFolder?.systemRole === 'inbox';
+  const batchTargets = folders.filter((folder) => folder.systemRole !== 'inbox');
   const rootStyle = useMemo(() => ({ '--accent': settings.accentColor, ...(settings.textColor ? { '--text': settings.textColor } : {}), '--card-width': `${settings.cardWidth}px`, '--gap': `${settings.gap}px`, '--columns': String(settings.columns), '--grid-justify': 'start', fontFamily: settings.fontFamily } as React.CSSProperties), [settings]);
 
   useEffect(() => { if (!toast) return; const timeout = window.setTimeout(() => setToast(null), 3600); return () => window.clearTimeout(timeout); }, [toast]);
   useEffect(() => { if (offlineSnapshot) setMode('browse'); }, [offlineSnapshot]);
+  useEffect(() => { setSelectedLinkIds(new Set()); }, [selectedFolderId, mode]);
+  useEffect(() => { if (!batchTargets.some((folder) => folder.id === batchTargetId)) setBatchTargetId(batchTargets[0]?.id ?? ''); }, [folders, batchTargetId]);
 
   async function flushClickRetryQueue() {
     await Promise.all([...clickRetryQueue.current].map(async (id) => { try { await api.click(id); clickRetryQueue.current.delete(id); } catch { /* Retry after the next successful load. */ } }));
@@ -167,18 +184,38 @@ function App() {
       setToast(next.metadataStatus === 'succeeded' ? '网页信息已更新' : `未能抓取：${next.metadataError ?? '请稍后再试'}`);
     } catch (cause) { setToast(`重新抓取失败：${cause instanceof Error ? cause.message : '无法连接本机服务'}`); }
   }
+  function toggleSelectedLink(id: string) { setSelectedLinkIds((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; }); }
+  async function moveSelectedLinks() {
+    const ids = links.filter((link) => selectedLinkIds.has(link.id)).map((link) => link.id);
+    if (!ids.length || !batchTargetId) return;
+    setBatchMoving(true); setError(null);
+    try {
+      const { moved } = await api.moveLinks(ids, batchTargetId);
+      setLinks((items) => items.filter((item) => !selectedLinkIds.has(item.id)));
+      setLibraryLinks((current) => ({
+        ...current,
+        ...(selectedFolderId ? { [selectedFolderId]: (current[selectedFolderId] ?? []).filter((item) => !selectedLinkIds.has(item.id)) } : {}),
+        [batchTargetId]: [...(current[batchTargetId] ?? []).filter((item) => !selectedLinkIds.has(item.id)), ...moved],
+      }));
+      setFolders((items) => items.map((folder) => folder.id === selectedFolderId ? { ...folder, linkCount: Math.max(0, (folder.linkCount ?? links.length) - moved.length) } : folder.id === batchTargetId ? { ...folder, linkCount: (folder.linkCount ?? 0) + moved.length } : folder));
+      setSelectedLinkIds(new Set());
+      setToast(`已将 ${moved.length} 个链接移动到“${folders.find((folder) => folder.id === batchTargetId)?.name ?? '目标标签'}”`);
+    } catch (cause) { setError(`批量整理失败：${cause instanceof Error ? cause.message : '无法连接本机服务'}`); }
+    finally { setBatchMoving(false); }
+  }
   function deleteFolder(id: string, name: string) { setFolders((items) => { const next = items.filter((item) => item.id !== id); setSelectedFolderId((current) => current === id ? next[0]?.id ?? null : current); return next; }); setLinks((items) => selectedFolderId === id ? [] : items); setLibraryLinks((current) => { const next = { ...current }; delete next[id]; return next; }); setDialog(null); setToast(`已删除标签“${name}”`); }
 
-  const tabs = !loading && (mode === 'organize' && !offlineSnapshot ? <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void reorderFolders(event)}><nav className="tabs organize-tabs" aria-label="书签标签"><SortableContext items={folders.map((folder) => folder.id)} strategy={horizontalListSortingStrategy}>{folders.map((folder) => <SortableTab key={folder.id} folder={folder} active={!showHistory && folder.id === selectedFolderId} onSelect={() => { setShowHistory(false); setSelectedFolderId(folder.id); }} />)}</SortableContext><button className="tab-add" onClick={() => setDialog({ type: 'folder' })}>添加标签</button></nav></DndContext> : <nav className="tabs" aria-label="书签标签">{folders.map((folder) => <div className="tab-wrap" key={folder.id}><button className={`tab ${!showHistory && folder.id === selectedFolderId ? 'active' : ''}`} onClick={() => { setShowHistory(false); setSelectedFolderId(folder.id); }}>{folder.name}</button></div>)}</nav>);
+  const tabs = !loading && (mode === 'organize' && !offlineSnapshot ? <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void reorderFolders(event)}><nav className="tabs organize-tabs" aria-label="书签标签"><SortableContext items={folders.map((folder) => folder.id)} strategy={horizontalListSortingStrategy}>{folders.map((folder) => <SortableTab key={folder.id} folder={folder} active={!showHistory && folder.id === selectedFolderId} disabled={batchMoving} onSelect={() => { setShowHistory(false); setSelectedFolderId(folder.id); }} />)}</SortableContext><button className="tab-add" disabled={batchMoving} onClick={() => setDialog({ type: 'folder' })}>添加标签</button></nav></DndContext> : <nav className="tabs" aria-label="书签标签">{folders.map((folder) => <div className="tab-wrap" key={folder.id}><button className={`tab ${!showHistory && folder.id === selectedFolderId ? 'active' : ''}`} onClick={() => { setShowHistory(false); setSelectedFolderId(folder.id); }}>{folder.name}</button></div>)}</nav>);
   const currentRecommendations = recommendations.filter((recommendation) => !links.some((link) => link.id === recommendation.id));
 
   return <main className={`app theme-${settings.theme} ${settings.compact ? 'compact' : ''} mode-${mode}`} style={rootStyle}>
-    <header className="header"><h1>快速访问</h1><BookmarkSearch query={searchQuery} links={Object.values(libraryLinks).flat()} folders={folders} onQueryChange={setSearchQuery} onOpen={openLink} /><div className="header-actions"><button className={`quiet-button history-button ${showHistory ? 'active' : ''}`} aria-pressed={showHistory} onClick={() => { setShowHistory(true); setMode('browse'); }}>浏览记录</button><button className="quiet-button" onClick={() => setDialog({ type: 'settings' })}>设置</button>{!offlineSnapshot && <button className={mode === 'organize' ? 'primary' : 'quiet-button'} onClick={() => { setShowHistory(false); setMode((current) => current === 'browse' ? 'organize' : 'browse'); }}>{mode === 'organize' ? '完成整理' : '整理书签'}</button>}</div></header>
+    <header className="header"><h1>快速访问</h1><BookmarkSearch query={searchQuery} links={Object.values(libraryLinks).flat()} folders={folders} onQueryChange={setSearchQuery} onOpen={openLink} /><div className="header-actions"><button className={`quiet-button history-button ${showHistory ? 'active' : ''}`} disabled={batchMoving} aria-pressed={showHistory} onClick={() => { setShowHistory(true); setMode('browse'); }}>浏览记录</button><button className="quiet-button" disabled={batchMoving} onClick={() => setDialog({ type: 'settings' })}>设置</button>{!offlineSnapshot && <button className={mode === 'organize' ? 'primary' : 'quiet-button'} disabled={batchMoving} onClick={() => { setShowHistory(false); setMode((current) => current === 'browse' ? 'organize' : 'browse'); }}>{mode === 'organize' ? '完成整理' : isInbox && links.length ? '整理收集箱' : '整理书签'}</button>}</div></header>
     {error && <aside className="connection-error" role="alert"><span>无法连接本机服务：{error}{offlineSnapshot ? '。正在显示上次成功同步的只读快照。' : ''}</span><button onClick={() => void load()}>重试</button><button onClick={() => setDialog({ type: 'connection' })}>检查连接</button></aside>}
     {tabs}
     <section className="content" aria-busy={loading}>{loading ? <p className="state">正在连接本机书签库…</p> : showHistory ? <HistoryPanel onOpen={(url) => window.location.assign(url)} onAdd={(item) => selectedFolderId ? setDialog({ type: 'link', initial: { url: item.url, title: item.title } }) : setToast('请先创建一个标签，再将记录添加为书签。')} /> : !selectedFolder ? <Empty onAdd={() => setDialog({ type: 'folder' })} /> : <>
-      <div className="section-heading"><div><h2>{selectedFolder.name}</h2><p>{links.length} 个链接{offlineSnapshot ? ' · 离线快照只读' : mode === 'organize' ? ' · 可拖动标签或链接排序' : ''}</p></div>{!offlineSnapshot && <button className="text-button" onClick={() => setDialog({ type: 'folder', folder: selectedFolder })}>管理此标签</button>}</div>
-      {mode === 'organize' && !offlineSnapshot ? <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void reorderLinks(event)}><SortableContext items={links.map((link) => link.id)} strategy={rectSortingStrategy}><div className={`links ${settings.layout} columns-${settings.columnMode}`}>{links.map((link) => <SortableCard key={link.id} link={link} settings={settings} onOpen={() => openLink(link)} onEdit={() => setDialog({ type: 'link', link })} />)}<AddCard folderName={selectedFolder.name} empty={links.length === 0} onClick={() => setDialog({ type: 'link' })} /></div></SortableContext></DndContext> : <><div className={`links ${settings.layout} columns-${settings.columnMode}`}>{links.map((link) => <BrowseCard key={link.id} link={link} settings={settings} onRecord={() => recordLinkClick(link)} onRetry={() => void retryMetadata(link)} />)}{!offlineSnapshot && <AddCard folderName={selectedFolder.name} empty={links.length === 0} onClick={() => setDialog({ type: 'link' })} />}</div>{!offlineSnapshot && settings.showRecommendations && <RecommendationStrip links={currentRecommendations} settings={settings} onOpen={recordLinkClick} />}</>}
+      <div className="section-heading"><div><h2>{selectedFolder.name}</h2><p>{links.length} 个{isInbox ? '待整理' : '链接'}{offlineSnapshot ? ' · 离线快照只读' : mode === 'organize' ? isInbox ? ' · 选择后批量移动，也可逐项编辑' : ' · 可拖动标签或链接排序' : isInbox ? ' · 点击“整理收集箱”开始归类' : ''}</p></div>{!offlineSnapshot && <button className="text-button" disabled={batchMoving} onClick={() => setDialog({ type: 'folder', folder: selectedFolder })}>管理此标签</button>}</div>
+      {mode === 'organize' && !offlineSnapshot && isInbox && <BatchOrganizer selectedCount={selectedLinkIds.size} totalCount={links.length} targetFolderId={batchTargetId} folders={batchTargets} busy={batchMoving} onToggleAll={() => setSelectedLinkIds((current) => current.size === links.length ? new Set() : new Set(links.map((link) => link.id)))} onTargetChange={setBatchTargetId} onMove={() => void moveSelectedLinks()} onCreateFolder={() => setDialog({ type: 'folder' })} />}
+      {mode === 'organize' && !offlineSnapshot ? <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void reorderLinks(event)}><SortableContext items={links.map((link) => link.id)} strategy={rectSortingStrategy}><div className={`links ${settings.layout} columns-${settings.columnMode}`}>{links.map((link) => <SortableCard key={link.id} link={link} settings={settings} selectable={isInbox} selected={selectedLinkIds.has(link.id)} disabled={isInbox && batchMoving} onToggle={() => toggleSelectedLink(link.id)} onOpen={() => openLink(link)} onEdit={() => setDialog({ type: 'link', link })} />)}<AddCard folderName={selectedFolder.name} empty={links.length === 0} disabled={batchMoving} onClick={() => setDialog({ type: 'link' })} /></div></SortableContext></DndContext> : <><div className={`links ${settings.layout} columns-${settings.columnMode}`}>{links.map((link) => <BrowseCard key={link.id} link={link} settings={settings} onRecord={() => recordLinkClick(link)} onRetry={() => void retryMetadata(link)} />)}{!offlineSnapshot && <AddCard folderName={selectedFolder.name} empty={links.length === 0} onClick={() => setDialog({ type: 'link' })} />}</div>{!offlineSnapshot && settings.showRecommendations && <RecommendationStrip links={currentRecommendations} settings={settings} onOpen={recordLinkClick} />}</>}
     </>}</section>
     {toast && <Toast>{toast}</Toast>}
     {dialog?.type === 'link' && selectedFolderId && <LinkDialog link={dialog.link} initial={dialog.initial} initialDeleteArmed={dialog.deleteArmed} folderId={selectedFolderId} folders={folders} onClose={() => setDialog(null)} onSaved={(next) => { updateLibraryLink(next, dialog.link?.folderId); setLinks((items) => { const exists = items.some((item) => item.id === next.id); if (next.folderId !== selectedFolderId) return exists ? items.filter((item) => item.id !== next.id) : items; return exists ? items.map((item) => item.id === next.id ? next : item) : [...items, next]; }); setDialog(null); setToast(dialog.link ? '链接已更新' : '链接已添加'); }} onDeleted={(id, name) => { setLinks((items) => items.filter((item) => item.id !== id)); setLibraryLinks((current) => Object.fromEntries(Object.entries(current).map(([folderId, items]) => [folderId, items.filter((item) => item.id !== id)]))); setDialog(null); setToast(`已删除链接“${name}”`); }} />}
@@ -188,7 +225,7 @@ function App() {
   </main>;
 }
 
-function AddCard({ folderName, empty, onClick }: { folderName: string; empty: boolean; onClick(): void }) { return <button className="add-card" onClick={onClick} aria-label={`在${folderName}中添加链接`}><strong>添加链接</strong><small>{empty ? '从第一个网址开始' : `添加到“${folderName}”`}</small></button>; }
+function AddCard({ folderName, empty, disabled = false, onClick }: { folderName: string; empty: boolean; disabled?: boolean; onClick(): void }) { return <button className="add-card" disabled={disabled} onClick={onClick} aria-label={`在${folderName}中添加链接`}><strong>添加链接</strong><small>{empty ? '从第一个网址开始' : `添加到“${folderName}”`}</small></button>; }
 function Empty({ onAdd }: { onAdd(): void }) { return <div className="empty"><h2>从第一个标签开始</h2><ol className="starter-steps"><li>创建标签，例如“工作”或“常用”</li><li>添加第一个网址，可填写自己的标题和简介</li><li>以后打开新标签页，直接点击卡片访问</li></ol><button className="primary" onClick={onAdd}>创建第一个标签</button></div>; }
 
 function DialogFrame({ title, children, onClose }: { title: string; children: React.ReactNode; onClose(): void }) {
@@ -294,9 +331,10 @@ function DeleteConfirmation({ subject, detail, busy, onCancel, onConfirm }: { su
 
 function FolderDialog({ folder, linkCount, onClose, onSaved, onDeleted }: { folder?: Folder; linkCount: number; onClose(): void; onSaved(folder: Folder): void; onDeleted(id: string, name: string): void }) {
   const [name, setName] = useState(folder?.name ?? ''); const [autoRulesText, setAutoRulesText] = useState(folder?.autoRules.join('\n') ?? ''); const [message, setMessage] = useState<string | null>(null); const [deleteArmed, setDeleteArmed] = useState(false); const [deleting, setDeleting] = useState(false);
+  const isInbox = folder?.systemRole === 'inbox';
   const autoRules = () => [...new Set(autoRulesText.split(/[\n,]+/).map((rule) => rule.trim().toLowerCase()).filter(Boolean))];
   async function remove() { if (!folder) return; setDeleting(true); setMessage(null); try { await api.deleteFolder(folder.id); onDeleted(folder.id, folder.name); } catch (cause) { setMessage(`删除失败：${cause instanceof Error ? cause.message : '无法连接本机服务'}`); setDeleteArmed(false); } finally { setDeleting(false); } }
-  return <DialogFrame title={folder ? '管理标签' : '添加标签'} onClose={onClose}><form className="form" onSubmit={async (event) => { event.preventDefault(); setMessage(null); try { const input = { name, autoRules: autoRules() }; onSaved(folder ? await api.updateFolder(folder.id, input) : await api.createFolder(input)); } catch (cause) { setMessage((cause as Error).message); } }}><label>标签名称<input required autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label><fieldset><legend>自动归集规则</legend><label>匹配域名<textarea value={autoRulesText} onChange={(event) => setAutoRulesText(event.target.value)} placeholder={'例如：\n*.github.com\ngithub.com'} /></label><p className="hint">每行或逗号分隔一条。`*.github.com` 会匹配 github.com 及其子域名；保存后会立即归集已有链接。</p></fieldset>{folder && <p className="hint">此标签包含 {linkCount} 个链接。多个标签命中同一网址时，以标签从左到右的顺序为准。</p>}{deleteArmed && folder && <DeleteConfirmation subject={`标签“${folder.name}”`} detail={`其中 ${linkCount} 个链接也会永久删除。`} busy={deleting} onCancel={() => setDeleteArmed(false)} onConfirm={() => void remove()} />}{message && <p className="form-error">{message}</p>}<footer>{folder && !deleteArmed && <button type="button" className="danger" onClick={() => setDeleteArmed(true)}>删除标签</button>}{!deleteArmed && <button className="primary">保存</button>}</footer></form></DialogFrame>;
+  return <DialogFrame title={isInbox ? '管理收集箱' : folder ? '管理标签' : '添加标签'} onClose={onClose}><form className="form" onSubmit={async (event) => { event.preventDefault(); setMessage(null); try { const input = { name, autoRules: isInbox ? [] : autoRules() }; onSaved(folder ? await api.updateFolder(folder.id, input) : await api.createFolder(input)); } catch (cause) { setMessage((cause as Error).message); } }}><label>标签名称<input required autoFocus value={name} onChange={(event) => setName(event.target.value)} /></label>{isInbox ? <p className="system-folder-note"><strong>这是当前页面一键收藏的固定入口。</strong><span>可以改名，但不能删除或设置自动归集规则；将链接移出收集箱即代表整理完成。</span></p> : <fieldset><legend>自动归集规则</legend><label>匹配域名<textarea value={autoRulesText} onChange={(event) => setAutoRulesText(event.target.value)} placeholder={'例如：\n*.github.com\ngithub.com'} /></label><p className="hint">每行或逗号分隔一条。`*.github.com` 会匹配 github.com 及其子域名；保存后会立即归集已有链接。</p></fieldset>}{folder && <p className="hint">此标签包含 {linkCount} 个链接。{!isInbox && '多个标签命中同一网址时，以标签从左到右的顺序为准。'}</p>}{deleteArmed && folder && !isInbox && <DeleteConfirmation subject={`标签“${folder.name}”`} detail={`其中 ${linkCount} 个链接也会永久删除。`} busy={deleting} onCancel={() => setDeleteArmed(false)} onConfirm={() => void remove()} />}{message && <p className="form-error">{message}</p>}<footer>{folder && !isInbox && !deleteArmed && <button type="button" className="danger" onClick={() => setDeleteArmed(true)}>删除标签</button>}{!deleteArmed && <button className="primary">保存</button>}</footer></form></DialogFrame>;
 }
 
 function SettingsDialog({ settings, onClose, onOpenConnection, onSaved }: { settings: Settings; onClose(): void; onOpenConnection(): void; onSaved(settings: Settings): void }) {

@@ -6,4 +6,5 @@ coverage/
 *.sqlite-*
 data/
 .control-panel/
+.omx/
 apps/extension/dist/

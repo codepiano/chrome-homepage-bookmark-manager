@@ -9,6 +9,7 @@ const tokenFile=resolve(dataDir,'api-token');
 function loadToken() { if (process.env.SPEED_DIAL_API_TOKEN) return process.env.SPEED_DIAL_API_TOKEN; if (existsSync(tokenFile)) return readFileSync(tokenFile,'utf8').trim(); const token=randomBytes(32).toString('base64url'); writeFileSync(tokenFile,token,{mode:0o600}); chmodSync(tokenFile,0o600); return token; }
 const token=loadToken();
 const store=new Store(resolve(dataDir,'speed-dial.sqlite'));
+store.ensureDailySnapshot();
 const app=createServer({store,token});
 app.addHook('onClose', async () => store.close());
 const port=Number(process.env.PORT ?? 3721);

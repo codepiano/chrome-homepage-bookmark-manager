@@ -3,7 +3,7 @@
   "name": "Local Speed Dial",
   "version": "0.1.0",
   "description": "本机 API 驱动的新标签页快速访问与一键收藏。",
-  "permissions": ["storage", "activeTab", "history", "alarms"],
+  "permissions": ["storage", "activeTab", "alarms", "contextMenus"],
   "action": { "default_title": "收藏当前页面到收集箱" },
   "commands": {
     "_execute_action": {

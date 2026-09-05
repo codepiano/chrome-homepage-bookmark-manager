@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { blockedIp, fetchMetadata, MetadataError, parseMetadata, readMetadataHtml } from '../src/metadata.js';
+import { blockedIp, checkLinkHealth, fetchMetadata, MetadataError, parseMetadata, readMetadataHtml } from '../src/metadata.js';
 
 test('blocks private, loopback, and IPv4-mapped IPv6 addresses', () => {
   for (const address of ['127.0.0.1', '10.0.0.1', '192.168.1.1', '::1', '::ffff:127.0.0.1', '::ffff:7f00:1']) {
@@ -12,6 +12,11 @@ test('blocks private, loopback, and IPv4-mapped IPv6 addresses', () => {
 test('refuses IPv4-mapped loopback URLs before making a metadata request', async () => {
   await assert.rejects(fetchMetadata('http://[::ffff:127.0.0.1]/'), (error: unknown) =>
     error instanceof MetadataError && error.message === 'Private or loopback addresses cannot be fetched');
+});
+
+test('health checks classify unsupported and private targets without requesting them', async () => {
+  assert.equal((await checkLinkHealth('chrome://settings/')).status, 'unsupported');
+  assert.equal((await checkLinkHealth('http://127.0.0.1/')).status, 'unsupported');
 });
 
 test('parses metadata and favicon when attributes are in a different order', () => {

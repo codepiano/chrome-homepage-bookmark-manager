@@ -15,6 +15,8 @@ test('folders, links, ordering and click aggregates persist in SQLite', () => {
   assert.equal(link.description, 'An example link');
   store.recordClick(link.id); store.recordClick(link.id);
   assert.equal(store.getLink(link.id)?.clickCount, 2);
+  assert.ok(store.setLinkPinned(link.id,true)?.pinnedAt);
+  assert.equal(store.setLinkPinned(link.id,false)?.pinnedAt,null);
   store.reorderLinks([{id:link.id,folderId:two.id}]);
   assert.deepEqual(store.listLinks(one.id), []);
   assert.equal(store.listLinks(two.id)[0]?.folderId, two.id);
@@ -22,6 +24,14 @@ test('folders, links, ordering and click aggregates persist in SQLite', () => {
   assert.deepEqual(store.listFolders().map(folder=>folder.id), [two.id,one.id]);
   store.deleteFolder(two.id);
   assert.equal(store.getLink(link.id), undefined);
+  assert.equal(store.listTrash().folders[0]?.id, two.id);
+  assert.equal(store.restoreFolder(two.id), true);
+  assert.equal(store.getLink(link.id)?.folderId, two.id);
+  store.deleteLink(link.id);
+  assert.equal(store.getLink(link.id), undefined);
+  assert.equal(store.listTrash().links[0]?.id, link.id);
+  assert.equal(store.restoreLink(link.id), true);
+  assert.equal(store.getLink(link.id)?.folderId, two.id);
   store.close();
 });
 
@@ -40,6 +50,30 @@ test('folder domain rules collect existing links and route newly added links', (
   const added = store.createLink(inbox.id, { url: 'https://github.com/openai' })!;
   assert.equal(added.folderId, github.id);
   store.close();
+});
+
+test('duplicate merge transfers clicks and restore reverses the transfer', () => {
+  const store = createStore(); const folder = store.createFolder('Duplicates');
+  const keep = store.createLink(folder.id, { url:'https://example.com/merge', title:'Keep' })!;
+  const source = store.createLink(folder.id, { url:'https://example.com/merge', description:'Merged description' })!;
+  store.recordClick(keep.id); store.recordClick(source.id); store.recordClick(source.id);
+  const result = store.mergeLinks(keep.id, [source.id]);
+  assert.equal(result.kept.clickCount, 3);
+  assert.equal(result.kept.description, 'Merged description');
+  assert.equal(store.getLink(source.id), undefined);
+  assert.equal(store.restoreLink(source.id), true);
+  assert.equal(store.getLink(keep.id)?.clickCount, 1);
+  assert.equal(store.getLink(source.id)?.clickCount, 2);
+  store.close();
+});
+
+test('library snapshots restore folders, links, ordering and settings', () => {
+  const store=createStore(); const folder=store.createFolder('Snapshot folder'); const link=store.createLink(folder.id,{url:'https://example.com/snapshot',title:'Snapshot link'})!;
+  store.setSettings({accentColor:'#123456'}); const snapshot=store.createSnapshot('Before changes');
+  store.updateFolder(folder.id,{name:'Changed folder',autoRules:[]}); store.deleteLink(link.id); const extra=store.createFolder('Extra folder'); store.setSettings({accentColor:'#654321'});
+  assert.equal(store.restoreSnapshot(snapshot.id),true);
+  assert.equal(store.getFolder(folder.id)?.name,'Snapshot folder'); assert.equal(store.getLink(link.id)?.title,'Snapshot link'); assert.equal(store.getFolder(extra.id),undefined); assert.equal(store.getSettings().accentColor,'#123456');
+  assert.equal(store.listSnapshots()[0]?.kind,'pre_restore'); store.close();
 });
 
 test('inbox is stable, bypasses automatic rules, and supports batch moves', () => {

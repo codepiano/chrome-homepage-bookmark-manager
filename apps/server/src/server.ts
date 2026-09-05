@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import { z } from 'zod';
 import type { Store } from './db.js';
-import { fetchMetadata, MetadataError } from './metadata.js';
+import { checkLinkHealth, fetchMetadata, MetadataError } from './metadata.js';
 
 const id = z.string().uuid();
 const httpUrl = z.string().url().max(4096).refine(value => /^https?:\/\//i.test(value), 'Only HTTP(S) URLs are accepted');
@@ -13,12 +13,17 @@ function normalizeLinkUrl(value: unknown) {
 const linkUrl = z.preprocess(normalizeLinkUrl, z.string().url().max(4096).refine(value => /^(https?:\/\/|chrome:\/\/)/i.test(value), 'Only HTTP(S) and Chrome internal URLs are accepted'));
 const nullableText = z.string().max(10_000).nullable();
 const autoRule = z.string().trim().toLowerCase().regex(/^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/, '规则必须是域名，例如 github.com 或 *.github.com');
-const folderInput = z.object({ name: z.string().trim().min(1).max(120), autoRules: z.array(autoRule).max(50).default([]) }).strict();
+const folderInput = z.object({ name: z.string().trim().min(1).max(120), autoRules: z.array(autoRule).max(50).default([]), parentId: id.nullable().optional() }).strict();
 const appearanceOverride = z.object({ accentColor:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), cardColor:z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(), icon:z.string().trim().max(8).optional() }).strict();
-const settings = z.object({ theme:z.enum(['system','light','dark']).optional(), layout:z.enum(['grid','list']).optional(), columnMode:z.enum(['auto','fixed']).optional(), columns:z.number().int().min(1).max(12).optional(), gap:z.number().min(0).max(96).optional(), cardWidth:z.number().min(120).max(800).optional(), centered:z.boolean().optional(), showAddButton:z.boolean().optional(), compact:z.boolean().optional(), fontFamily:z.string().max(200).optional(), textColor:z.string().max(100).nullable().optional(), accentColor:z.string().max(100).nullable().optional(), showDescription:z.boolean().optional(), showClickCount:z.boolean().optional(), showLastVisited:z.boolean().optional(), showRecommendations:z.boolean().optional() }).strict();
+const settings = z.object({ theme:z.enum(['system','light','dark']).optional(), layout:z.enum(['grid','list']).optional(), columnMode:z.enum(['auto','fixed']).optional(), columns:z.number().int().min(1).max(12).optional(), gap:z.number().min(0).max(96).optional(), cardWidth:z.number().min(120).max(800).optional(), centered:z.boolean().optional(), showAddButton:z.boolean().optional(), compact:z.boolean().optional(), fontFamily:z.string().max(200).optional(), textColor:z.string().max(100).nullable().optional(), accentColor:z.string().max(100).nullable().optional(), showDescription:z.boolean().optional(), showClickCount:z.boolean().optional(), showLastVisited:z.boolean().optional(), showRecommendations:z.boolean().optional(), tagSidebarPosition:z.enum(['left','right']).optional(), tagSidebarWidth:z.number().int().min(220).max(480).optional() }).strict();
 const uuidParams = z.object({ id });
-const browserHistoryRecord = z.object({ url:z.string().url().max(4096), title:z.string().max(10_000).nullable(), lastVisitTime:z.number().int().nonnegative(), visitCount:z.number().int().nonnegative(), source:z.enum(['initial','live']) }).strict();
-const browserHistoryRemoval = z.object({ allHistory:z.boolean(), urls:z.array(z.string().url().max(4096)).max(500).optional() }).strict();
+// Chrome history can contain file://, chrome://, extension, and truncated long
+// URLs. They are opaque browser-history identifiers here, not navigation
+// targets, so validating them as ordinary web URLs rejects legitimate records
+// and can permanently poison the extension's retry queue.
+const browserHistoryUrl = z.string().min(1).max(4096);
+const browserHistoryRecord = z.object({ url:browserHistoryUrl, title:z.string().max(10_000).nullable(), lastVisitTime:z.number().int().nonnegative(), visitCount:z.number().int().nonnegative(), source:z.enum(['initial','live']) }).strict();
+const browserHistoryRemoval = z.object({ allHistory:z.boolean(), urls:z.array(browserHistoryUrl).max(500).optional() }).strict();
 const aiLinkInput = z.object({
   url: linkUrl,
   title: nullableText.optional(),
@@ -62,7 +67,7 @@ const importInput = z.object({
 }).strict().superRefine((value, context) => {
   if (value.targetFolderId && value.bundle.scope !== 'folder') context.addIssue({ code: 'custom', message: 'targetFolderId can only be used with a folder export', path: ['targetFolderId'] });
 });
-const browserHistoryList = z.object({ query:z.string().trim().max(200).optional(), cursorTime:z.coerce.number().int().nonnegative().optional(), cursorUrl:z.string().url().max(4096).optional(), limit:z.coerce.number().int().min(1).max(100).default(50) }).strict().refine(value => (value.cursorTime !== undefined) === (value.cursorUrl !== undefined), 'cursorTime and cursorUrl must be provided together');
+const browserHistoryList = z.object({ query:z.string().trim().max(200).optional(), cursorTime:z.coerce.number().int().nonnegative().optional(), cursorUrl:browserHistoryUrl.optional(), limit:z.coerce.number().int().min(1).max(100).default(50) }).strict().refine(value => (value.cursorTime !== undefined) === (value.cursorUrl !== undefined), 'cursorTime and cursorUrl must be provided together');
 function parse<T>(schema: z.ZodType<T>, value: unknown): T { return schema.parse(value); }
 function exportFolder(store: Store, folder: { name: string; autoRules: string[]; systemRole: 'inbox' | null; id: string }) {
   return {
@@ -137,29 +142,38 @@ export function createServer({ store, token }: ServerOptions) {
   app.get('/health', async () => ({ status:'ok', protocolVersion:1 }));
   app.get('/api/settings', async () => store.getSettings());
   app.put('/api/settings', async request => store.setSettings(parse(settings, request.body)));
+  app.get('/api/snapshots', async () => store.listSnapshots());
+  app.post('/api/snapshots', async (request,reply) => { const {label}=parse(z.object({label:z.string().trim().min(1).max(120).default('手动快照')}).strict(),request.body??{}); return reply.code(201).send(store.createSnapshot(label,'manual')); });
+  app.post('/api/snapshots/:id/restore', async (request,reply) => { const {id}=parse(uuidParams,request.params); return store.restoreSnapshot(id)?{restored:true}:notFound(reply); });
   app.get('/api/folders', async () => store.listFolders());
   app.get('/api/export', async () => {
     const { updatedAt: _updatedAt, ...exportedSettings } = store.getSettings();
     return { format: 'local-speed-dial/bookmarks', version: 1, scope: 'library', exportedAt: new Date().toISOString(), settings: exportedSettings, folders: store.listFolders().map(folder => exportFolder(store, folder)) };
   });
-  app.post('/api/folders', async (request, reply) => { const body=parse(folderInput,request.body); return reply.code(201).send(store.createFolder(body.name, body.autoRules)); });
+  app.post('/api/folders', async (request, reply) => { const body=parse(folderInput,request.body); return reply.code(201).send(store.createFolder(body.name, body.autoRules, body.parentId ?? null)); });
   app.patch('/api/folders/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); const body=parse(folderInput,request.body); const folder=store.getFolder(id); if (folder?.systemRole === 'inbox' && body.autoRules.length) return reply.code(400).send({ error:{ code:'invalid_request', message:'收集箱不能设置自动归集规则' } }); const result=store.updateFolder(id,body); return result ? { ...result.folder, autoCollected: result.moved } : notFound(reply); });
   app.delete('/api/folders/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); const folder=store.getFolder(id); if (folder?.systemRole === 'inbox') return reply.code(409).send({ error:{ code:'system_folder', message:'收集箱不能删除' } }); return store.deleteFolder(id) ? reply.code(204).send() : notFound(reply); });
   app.post('/api/folders/reorder', async request => store.reorderFolders(parse(z.object({ids:z.array(id)}),request.body).ids));
+  app.post('/api/folders/move', async request => { const body=parse(z.object({ id, parentId:id.nullable(), index:z.number().int().min(0) }).strict(),request.body); return store.moveFolder(body.id, body.parentId, body.index); });
   app.get('/api/folders/:id/export', async (request, reply) => { const { id } = parse(uuidParams, request.params); const folder = store.getFolder(id); return folder ? { format: 'local-speed-dial/bookmarks', version: 1, scope: 'folder', exportedAt: new Date().toISOString(), folders: [exportFolder(store, folder)] } : notFound(reply); });
   app.get('/api/folders/:folderId/links', async (request,reply) => { const {folderId}=parse(z.object({folderId:id}),request.params); return store.getFolder(folderId) ? store.listLinks(folderId) : notFound(reply); });
   app.get('/api/links/duplicates', async request => { const { url } = parse(z.object({ url: linkUrl }), request.query); return store.findLinksByUrl(url); });
   app.get('/api/recommendations', async () => ({ recommendations: store.listRecommendations() }));
+  app.get('/api/trash', async () => store.listTrash());
+  app.post('/api/trash/folders/:id/restore', async (request, reply) => { const { id } = parse(uuidParams, request.params); return store.restoreFolder(id) ? { restored:true } : notFound(reply); });
+  app.post('/api/trash/links/:id/restore', async (request, reply) => { const { id } = parse(uuidParams, request.params); return store.restoreLink(id) ? { restored:true } : notFound(reply); });
   app.post('/api/capture', async (request, reply) => {
-    const body = parse(z.object({ url:linkUrl, title:nullableText.optional() }).strict(), request.body);
+    const body = parse(z.object({ url:linkUrl, title:nullableText.optional(), folderId:id.optional() }).strict(), request.body);
     const inbox = store.ensureInboxFolder();
+    const folder = body.folderId ? store.getFolder(body.folderId) : inbox;
+    if (!folder) return notFound(reply);
     const duplicate = store.findLinksByUrl(body.url)[0];
-    if (duplicate) return { status:'already-saved', link:duplicate, inbox };
-    const link = store.createLink(inbox.id, body, { applyAutoRules:false });
+    if (duplicate) return { status:'already-saved', link:duplicate, folder, inbox };
+    const link = store.createLink(folder.id, body, { applyAutoRules:false });
     if (!link) throw new Error('Failed to capture link');
     if (/^https?:\/\//i.test(link.url)) refreshMetadata(store, link.id, link.url);
     else store.setMetadata(link.id, { status:'succeeded', error:null });
-    return reply.code(201).send({ status:'created', link, inbox });
+    return reply.code(201).send({ status:'created', link, folder, inbox });
   });
   app.post('/api/ai/links', async (request, reply) => {
     const body = parse(aiIngestInput, request.body);
@@ -204,6 +218,7 @@ export function createServer({ store, token }: ServerOptions) {
   app.post('/api/import', async (request, reply) => reply.code(201).send(importLinks(store, parse(importInput, request.body))));
   app.post('/api/history/records', async request => store.recordBrowserHistory(parse(z.object({ records:z.array(browserHistoryRecord).min(1).max(100) }).strict(), request.body).records));
   app.post('/api/history/removals', async request => store.markBrowserHistoryRemoved(parse(browserHistoryRemoval, request.body)));
+  app.delete('/api/history', async request => { const { url } = parse(z.object({ url: browserHistoryUrl }).strict(), request.query); return store.deleteBrowserHistory(url); });
   app.get('/api/history', async request => { const query = parse(browserHistoryList, request.query); return store.listBrowserHistory({ query: query.query, cursor: query.cursorTime === undefined ? undefined : { time: query.cursorTime, url: query.cursorUrl! }, limit: query.limit }); });
   app.post('/api/folders/:folderId/links', async (request,reply) => {
     const {folderId}=parse(z.object({folderId:id}),request.params);
@@ -217,11 +232,15 @@ export function createServer({ store, token }: ServerOptions) {
     }
     return reply.code(201).send(store.setMetadata(link.id, { status: 'succeeded', error: null }));
   });
-  app.patch('/api/links/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); const body=parse(z.object({url:linkUrl.optional(),title:nullableText.optional(),description:nullableText.optional(),faviconUrl:httpUrl.nullable().optional(),displayName:nullableText.optional(),appearanceOverride:appearanceOverride.nullable().optional()}).strict(),request.body); const link=store.updateLink(id,body); return link ?? notFound(reply); });
+  app.patch('/api/links/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); const body=parse(z.object({url:linkUrl.optional(),title:nullableText.optional(),description:nullableText.optional(),faviconUrl:httpUrl.nullable().optional(),displayName:nullableText.optional(),appearanceOverride:appearanceOverride.nullable().optional()}).strict(),request.body); const link=store.updateLink(id,body); if (link && body.url) return store.resetLinkHealth(id); return link ?? notFound(reply); });
   app.delete('/api/links/:id', async (request,reply) => { const {id}=parse(uuidParams,request.params); return store.deleteLink(id) ? reply.code(204).send() : notFound(reply); });
   app.post('/api/links/move', async request => { const body=parse(z.object({ ids:z.array(id).min(1).max(1_000), folderId:id }).strict(),request.body); return { moved:store.moveLinksToFolder(body.ids,body.folderId) }; });
+  app.post('/api/links/merge', async request => { const body=parse(z.object({ keepId:id, mergeIds:z.array(id).min(1).max(100) }).strict(),request.body); return store.mergeLinks(body.keepId, body.mergeIds); });
+  app.post('/api/links/health-check', async request => { const ids=parse(z.object({ ids:z.array(id).min(1).max(30) }).strict(),request.body).ids; const queue=[...new Set(ids)]; const checked: unknown[]=[]; await Promise.all(Array.from({length:Math.min(4,queue.length)},async()=>{ while(queue.length){ const linkId=queue.shift()!; const link=store.getLink(linkId); if(!link) continue; checked.push(store.setLinkHealth(linkId,await checkLinkHealth(link.url))); } })); return { checked:checked.filter(Boolean) }; });
+  app.post('/api/links/:id/apply-redirect', async (request,reply) => { const {id}=parse(uuidParams,request.params); return store.applyLinkRedirect(id) ?? notFound(reply); });
   app.post('/api/links/reorder', async request => { const body=parse(z.object({items:z.array(z.object({id,folderId:id})).min(1)}),request.body); store.reorderLinks(body.items); return { ok:true }; });
   app.post('/api/links/:id/clicks', async (request,reply) => { const {id}=parse(uuidParams,request.params); const link=store.recordClick(id); return link ?? notFound(reply); });
+  app.post('/api/links/:id/pin', async (request,reply) => { const {id}=parse(uuidParams,request.params); const {pinned}=parse(z.object({pinned:z.boolean()}).strict(),request.body); return store.setLinkPinned(id,pinned) ?? notFound(reply); });
   app.post('/api/links/:id/refresh-metadata', async (request,reply) => { const {id}=parse(uuidParams,request.params); const link=store.getLink(id); if (!link) return notFound(reply); try { const metadata=await fetchMetadata(link.url); return store.setMetadata(id,{...metadata,status:'succeeded',error:null}); } catch (error) { const message=error instanceof MetadataError ? error.message : 'Metadata request failed'; return store.setMetadata(id,{status:'failed',error:message}); } });
   return app;
 }

@@ -15,6 +15,12 @@ test('API enforces bearer token and records a click', async () => {
   const folder=await app.inject({method:'POST',url:'/api/folders',headers,payload:{name:'Reading'}});
   assert.equal(folder.statusCode,201);
   const folderId=(folder.json() as {id:string}).id;
+  const nestedFolder=await app.inject({method:'POST',url:'/api/folders',headers,payload:{name:'Nested',parentId:folderId}});
+  assert.equal(nestedFolder.statusCode,201);
+  assert.equal(nestedFolder.json().parentId,folderId);
+  const movedNested=await app.inject({method:'POST',url:'/api/folders/move',headers,payload:{id:nestedFolder.json().id,parentId:null,index:0}});
+  assert.equal(movedNested.statusCode,200);
+  assert.equal(movedNested.json().parentId,null);
   const automaticFolder=await app.inject({method:'POST',url:'/api/folders',headers,payload:{name:'GitHub',autoRules:['*.github.com']}});
   assert.equal(automaticFolder.statusCode,201);
   const automaticFolderId=(automaticFolder.json() as {id:string}).id;
@@ -48,6 +54,16 @@ test('API enforces bearer token and records a click', async () => {
   const capturedAgain=await app.inject({method:'POST',url:'/api/capture',headers,payload:{url:'https://github.com/captured',title:'Captured twice'}});
   assert.equal(capturedAgain.statusCode,200);
   assert.equal(capturedAgain.json().status,'already-saved');
+  const capturedToFolder=await app.inject({method:'POST',url:'/api/capture',headers,payload:{url:'https://github.com/context-menu',title:'Saved from menu',folderId}});
+  assert.equal(capturedToFolder.statusCode,201);
+  assert.equal(capturedToFolder.json().link.folderId,folderId);
+  const trashDelete=await app.inject({method:'DELETE',url:`/api/links/${capturedToFolder.json().link.id}`,headers});
+  assert.equal(trashDelete.statusCode,204);
+  const trash=await app.inject({method:'GET',url:'/api/trash',headers});
+  assert.equal(trash.statusCode,200);
+  assert.equal(trash.json().links[0].id,capturedToFolder.json().link.id);
+  const trashRestore=await app.inject({method:'POST',url:`/api/trash/links/${capturedToFolder.json().link.id}/restore`,headers});
+  assert.equal(trashRestore.statusCode,200);
   const movedCapture=await app.inject({method:'POST',url:'/api/links/move',headers,payload:{ids:[captured.json().link.id],folderId}});
   assert.equal(movedCapture.statusCode,200);
   assert.equal(movedCapture.json().moved[0].folderId,folderId);
@@ -63,6 +79,16 @@ test('API enforces bearer token and records a click', async () => {
   const historyList=await app.inject({method:'GET',url:'/api/history?query=updated&limit=50',headers});
   assert.equal(historyList.statusCode,200);
   assert.equal((historyList.json() as {items:Array<{url:string}>}).items[0]?.url,'https://example.com/article');
+  const deletedHistory=await app.inject({method:'DELETE',url:`/api/history?url=${encodeURIComponent('https://example.com/article')}`,headers});
+  assert.equal(deletedHistory.statusCode,200);
+  assert.equal(deletedHistory.json().deleted,true);
+  assert.equal((await app.inject({method:'GET',url:'/api/history?query=updated&limit=50',headers})).json().items.length,0);
+  const rechecked=await app.inject({method:'POST',url:'/api/history/records',headers,payload:{records:[{url:'https://example.com/article',title:'Updated title',lastVisitTime:1_700_000_002_000,visitCount:5,source:'initial'}]}});
+  assert.equal(rechecked.statusCode,200);
+  assert.equal((await app.inject({method:'GET',url:'/api/history?query=updated&limit=50',headers})).json().items.length,0);
+  const revisited=await app.inject({method:'POST',url:'/api/history/records',headers,payload:{records:[{url:'https://example.com/article',title:'Updated title',lastVisitTime:1_700_000_003_000,visitCount:6,source:'live'}]}});
+  assert.equal(revisited.statusCode,200);
+  assert.equal((await app.inject({method:'GET',url:'/api/history?query=updated&limit=50',headers})).json().items.length,1);
   const internal=await app.inject({method:'POST',url:`/api/folders/${folderId}/links`,headers,payload:{url:'chrome://extensions/',title:'扩展管理'}});
   assert.equal(internal.statusCode,201);
   assert.equal((internal.json() as {metadataStatus:string}).metadataStatus,'succeeded');
@@ -104,5 +130,19 @@ test('API enforces bearer token and records a click', async () => {
   assert.equal(intoExisting.statusCode,201);
   assert.equal(intoExisting.json().updated.length,1);
   await restoreApp.close();
+  await app.close();
+});
+
+test('history ingestion accepts opaque Chrome URLs', async () => {
+  const store = new Store(join(mkdtempSync(join(tmpdir(), 'speed-dial-history-test-')), 'bookmarks.sqlite'));
+  const app = createServer({ store, token: 'test-token' });
+  const headers = { authorization: 'Bearer test-token' };
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/history/records',
+    headers,
+    payload: { records: [{ url: 'chrome://settings/history#recent', title: null, lastVisitTime: 1_700_000_010_000, visitCount: 1, source: 'live' }] },
+  });
+  assert.equal(response.statusCode, 200);
   await app.close();
 });

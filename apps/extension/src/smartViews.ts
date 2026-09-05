@@ -1,6 +1,6 @@
 import type { Link } from './types';
 
-export type SmartViewId = 'recent' | 'stale' | 'metadataFailed' | 'duplicates';
+export type SmartViewId = 'recent' | 'stale' | 'metadataFailed' | 'duplicates' | 'healthIssues';
 
 export interface SmartView {
   id: SmartViewId;
@@ -53,6 +53,13 @@ export function buildSmartViews(links: Link[], now = Date.now()): SmartView[] {
       description: '相同网址存在多份 · 可编辑或删除多余条目',
       emptyMessage: '没有发现网址完全相同的重复链接。',
       links: links.filter((link) => duplicateUrls.has(link.url)).sort((a, b) => a.url.localeCompare(b.url) || timestamp(a.createdAt) - timestamp(b.createdAt)),
+    },
+    {
+      id: 'healthIssues',
+      label: '链接待维护',
+      description: '失效、暂不可达或永久重定向的链接',
+      emptyMessage: '没有已发现的链接问题。可主动运行一次检查。',
+      links: links.filter((link) => ['redirected','broken','unreachable'].includes(link.healthStatus)).sort((a, b) => a.healthStatus.localeCompare(b.healthStatus) || timestamp(b.healthCheckedAt) - timestamp(a.healthCheckedAt)),
     },
   ];
 }

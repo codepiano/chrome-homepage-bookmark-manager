@@ -1,9 +1,11 @@
 export type MetadataStatus = 'pending' | 'succeeded' | 'failed';
+export type LinkHealthStatus = 'unchecked' | 'ok' | 'redirected' | 'broken' | 'unreachable' | 'unsupported';
 export interface LinkAppearance { accentColor?: string; cardColor?: string; icon?: string; }
 
 export interface Folder {
   id: string;
   name: string;
+  parentId: string | null;
   autoRules: string[];
   systemRole: 'inbox' | null;
   position: number;
@@ -26,6 +28,12 @@ export interface Link {
   lastClickedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  healthStatus: LinkHealthStatus;
+  healthCheckedAt: string | null;
+  healthHttpStatus: number | null;
+  healthRedirectUrl: string | null;
+  healthError: string | null;
+  pinnedAt: string | null;
 }
 
 export interface BrowserHistoryPage {
@@ -53,15 +61,21 @@ export interface Settings {
   showClickCount: boolean;
   showLastVisited: boolean;
   showRecommendations: boolean;
+  tagSidebarPosition: 'left' | 'right';
+  tagSidebarWidth: number;
 }
 
 export interface Recommendation extends Link { score: number; }
+export interface TrashFolder { id: string; name: string; deletedAt: string; descendantCount: number; linkCount: number; }
+export interface TrashLink { id: string; url: string; title: string | null; folderName: string; deletedAt: string; }
+export interface TrashSnapshot { folders: TrashFolder[]; links: TrashLink[]; }
+export interface LibrarySnapshotVersion { id: string; label: string; kind: 'daily' | 'manual' | 'pre_restore'; folderCount: number; linkCount: number; createdAt: string; }
 
 export const defaultSettings: Settings = {
   theme: 'system', layout: 'grid', columnMode: 'auto', columns: 4, gap: 14, cardWidth: 230,
   centered: false, showAddButton: true, compact: false, fontFamily: 'system-ui',
   textColor: null, accentColor: '#4f46e5', showDescription: true,
-  showClickCount: true, showLastVisited: true, showRecommendations: true,
+  showClickCount: true, showLastVisited: true, showRecommendations: true, tagSidebarPosition: 'left', tagSidebarWidth: 280,
 };
 
 export type LinkDraft = Pick<Link, 'url' | 'title' | 'description' | 'faviconUrl' | 'displayName' | 'appearanceOverride'>;

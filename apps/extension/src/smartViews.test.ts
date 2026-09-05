@@ -19,6 +19,8 @@ const link = (id: string, overrides: Partial<Link> = {}): Link => ({
   lastClickedAt: null,
   createdAt: '2026-08-12T00:00:00.000Z',
   updatedAt: '2026-08-12T00:00:00.000Z',
+  healthStatus: 'unchecked', healthCheckedAt: null, healthHttpStatus: null, healthRedirectUrl: null, healthError: null,
+  pinnedAt: null,
   ...overrides,
 });
 

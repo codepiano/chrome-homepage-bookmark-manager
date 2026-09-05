@@ -145,28 +145,26 @@ curl -X POST http://127.0.0.1:3721/api/import \
 | `GET /api/folders` | 获取有序文件夹列表 |
 | `GET /api/folders/:folderId/links` | 获取一个文件夹中的链接 |
 | `GET /api/settings` | 获取页面设置 |
+| `GET /api/snapshots` | 获取本地版本快照列表 |
+| `POST /api/snapshots` | 创建手动快照 |
+| `POST /api/snapshots/:id/restore` | 恢复指定版本并创建恢复前保护快照 |
 | `POST /api/ai/links` | 批量写入链接 |
 | `POST /api/capture` | 捕获页面到系统收集箱 |
 | `POST /api/links/move` | 批量移动链接 |
+| `POST /api/links/merge` | 合并相同 URL 的重复链接 |
+| `POST /api/links/health-check` | 批量检查链接健康状态 |
+| `POST /api/links/:id/apply-redirect` | 应用已确认的永久重定向地址 |
+| `POST /api/links/:id/pin` | 置顶或取消置顶链接 |
 | `GET /api/links/duplicates?url=...` | 查询规范化 URL 的重复项 |
 | `GET /api/recommendations` | 获取常用和最近链接 |
-| `GET /api/history` | 搜索和分页读取本机历史库 |
+| `GET /api/trash` | 获取回收站中的标签和链接 |
+| `POST /api/trash/folders/:id/restore` | 恢复标签子树及其中链接 |
+| `POST /api/trash/links/:id/restore` | 恢复单个链接 |
 | `GET /api/export` | 导出全库 |
 | `GET /api/folders/:id/export` | 导出单个文件夹 |
 | `POST /api/import` | 导入便携 JSON |
 
 前后端共享的详细字段约束以 `packages/contracts/src/index.ts` 为准。为避免破坏数据，不建议绕过 API 直接写 SQLite。
-
-## 历史记录分页
-
-`GET /api/history` 支持：
-
-- `query`：搜索文本；
-- `limit`：每页条数；
-- `cursorTime`：上一页末尾的访问时间；
-- `cursorUrl`：上一页末尾的 URL。
-
-排序固定为最近访问时间降序，再按 URL 升序。继续分页时应同时回传响应给出的时间和 URL 游标，以免同一时间戳下漏项或重复。
 
 ## 自动化调用建议
 

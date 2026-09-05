@@ -3,6 +3,7 @@ import net from 'node:net';
 
 export class MetadataError extends Error {}
 export interface PageMetadata { title: string | null; description: string | null; faviconUrl: string | null; }
+export interface LinkHealth { status: 'ok' | 'redirected' | 'broken' | 'unreachable' | 'unsupported'; httpStatus: number | null; redirectUrl: string | null; error: string | null; }
 
 const MAX_BYTES = 4 * 1024 * 1024;
 const MAX_FAVICON_BYTES = 256 * 1024;
@@ -179,4 +180,28 @@ export async function fetchMetadata(input: string): Promise<PageMetadata> {
     return { ...metadata, faviconUrl: await inlineFavicon(metadata.faviconUrl, url) };
   }
   throw new MetadataError('Too many redirects');
+}
+
+/** Checks reachability without downloading the response body. */
+export async function checkLinkHealth(input: string): Promise<LinkHealth> {
+  let url: URL; try { url = new URL(input); } catch { return { status:'unsupported', httpStatus:null, redirectUrl:null, error:'网址格式无效' }; }
+  if (!['http:', 'https:'].includes(url.protocol)) return { status:'unsupported', httpStatus:null, redirectUrl:null, error:'仅检查 HTTP(S) 链接' };
+  const original = url.toString(); let permanentRedirect = false;
+  for (let redirects = 0; redirects <= 4; redirects++) {
+    try { await assertPublicTarget(url); } catch (error) { return { status:'unsupported', httpStatus:null, redirectUrl:null, error:error instanceof Error ? error.message : '目标地址不允许检查' }; }
+    let response: Response;
+    try { response = await fetch(url, { method:'GET', redirect:'manual', signal:AbortSignal.timeout(TIMEOUT_MS), headers:{ accept:'text/html,application/xhtml+xml,*/*;q=0.8', range:'bytes=0-0', 'user-agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Local-Speed-Dial/1.0' } }); }
+    catch (error) { return { status:'unreachable', httpStatus:null, redirectUrl:null, error:error instanceof DOMException && error.name === 'TimeoutError' ? '请求超时' : '无法连接目标网站' }; }
+    if ([301,302,303,307,308].includes(response.status)) {
+      await response.body?.cancel().catch(() => undefined); const location = response.headers.get('location');
+      if (!location) return { status:'broken', httpStatus:response.status, redirectUrl:null, error:'重定向缺少目标地址' };
+      permanentRedirect ||= response.status === 301 || response.status === 308; url = new URL(location, url); continue;
+    }
+    await response.body?.cancel().catch(() => undefined);
+    if (response.status === 404 || response.status === 410) return { status:'broken', httpStatus:response.status, redirectUrl:null, error:`页面返回 HTTP ${response.status}` };
+    if (response.status === 408 || response.status === 429 || response.status >= 500) return { status:'unreachable', httpStatus:response.status, redirectUrl:null, error:`网站暂时返回 HTTP ${response.status}` };
+    if (response.status >= 200 && response.status < 500) return { status:permanentRedirect && url.toString() !== original ? 'redirected' : 'ok', httpStatus:response.status, redirectUrl:permanentRedirect && url.toString() !== original ? url.toString() : null, error:null };
+    return { status:'broken', httpStatus:response.status, redirectUrl:null, error:`页面返回 HTTP ${response.status}` };
+  }
+  return { status:'broken', httpStatus:null, redirectUrl:null, error:'重定向次数过多' };
 }

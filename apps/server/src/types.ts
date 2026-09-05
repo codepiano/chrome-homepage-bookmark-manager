@@ -1,4 +1,5 @@
 export type MetadataStatus = 'pending' | 'succeeded' | 'failed';
+export type LinkHealthStatus = 'unchecked' | 'ok' | 'redirected' | 'broken' | 'unreachable' | 'unsupported';
 
 export interface LinkAppearance {
   accentColor?: string;
@@ -9,6 +10,7 @@ export interface LinkAppearance {
 export interface Folder {
   id: string;
   name: string;
+  parentId: string | null;
   autoRules: string[];
   systemRole: 'inbox' | null;
   position: number;
@@ -34,6 +36,12 @@ export interface Link {
   updatedAt: string;
   clickCount: number;
   lastClickedAt: string | null;
+  healthStatus: LinkHealthStatus;
+  healthCheckedAt: string | null;
+  healthHttpStatus: number | null;
+  healthRedirectUrl: string | null;
+  healthError: string | null;
+  pinnedAt: string | null;
 }
 
 export interface BrowserHistoryRecord {
@@ -56,5 +64,5 @@ export const DEFAULT_SETTINGS = {
   theme: 'system', layout: 'grid', columnMode: 'auto', columns: 4, gap: 16, cardWidth: 240,
   centered: true, showAddButton: true, compact: false, fontFamily: 'system-ui',
   textColor: null, accentColor: '#4f46e5', showDescription: true,
-  showClickCount: true, showLastVisited: true, showRecommendations: true,
+  showClickCount: true, showLastVisited: true, showRecommendations: true, tagSidebarPosition: 'left', tagSidebarWidth: 280,
 };

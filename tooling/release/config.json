@@ -1,0 +1,52 @@
+{
+  "legacy": {
+    "start": [
+      "./scripts/start.sh"
+    ],
+    "stop": [
+      "./scripts/stop.sh"
+    ],
+    "status": [
+      "./scripts/status.sh"
+    ]
+  },
+  "prepare": [
+    [
+      "corepack",
+      "pnpm",
+      "install",
+      "--frozen-lockfile"
+    ],
+    [
+      "corepack",
+      "pnpm",
+      "build"
+    ]
+  ],
+  "outputs": [
+    "node_modules"
+  ],
+  "persistent": [
+    "data"
+  ],
+  "runtimeFiles": [
+    ".env",
+    ".env.local",
+    ".env.production"
+  ],
+  "exclude": [],
+  "toolchain": [
+    [
+      "node",
+      "--version"
+    ]
+  ],
+  "startupTimeoutSec": 180,
+  "patches": [
+    {
+      "file": "package.json",
+      "before": "pnpm --filter",
+      "after": "corepack pnpm --filter"
+    }
+  ]
+}

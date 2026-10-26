@@ -1,3 +1,4 @@
+import { settingsUpdate } from './settings';
 import type { BrowserHistoryPage, Folder, LibrarySnapshotVersion, Link, LinkAppearance, LinkDraft, Recommendation, Settings, TrashSnapshot } from './types';
 
 export interface ConnectionPreferences { apiBaseUrl: string; token: string; }
@@ -72,7 +73,7 @@ export const api = {
   click: (id: string) => request<Link>(`/api/links/${id}/clicks`, { method: 'POST' }),
   pinLink: (id: string, pinned: boolean) => request<Link>(`/api/links/${id}/pin`, { method: 'POST', body: JSON.stringify({ pinned }) }),
   settings: () => request<Settings>('/api/settings'),
-  updateSettings: (settings: Partial<Settings>) => request<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+  updateSettings: (settings: Partial<Settings>) => request<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(settingsUpdate(settings)) }),
   snapshots: () => request<LibrarySnapshotVersion[]>('/api/snapshots'),
   createSnapshot: (label: string) => request<LibrarySnapshotVersion>('/api/snapshots', { method:'POST', body:JSON.stringify({label}) }),
   restoreSnapshot: (id: string) => request<{restored:boolean}>(`/api/snapshots/${id}/restore`, { method:'POST' }),

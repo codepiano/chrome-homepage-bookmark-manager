@@ -53,7 +53,7 @@ SQLite · data/speed-dial.sqlite
 ### 环境要求
 
 - Chrome 或其他支持 Manifest V3 解压扩展的 Chromium 浏览器；
-- Node.js 22 或更高版本；
+- Node.js 22.12 或更高版本；
 - Corepack / pnpm；
 - 使用仓库生命周期脚本时，需要 macOS、`tmux` 和 `lsof`。
 

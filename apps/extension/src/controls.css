@@ -1,0 +1,26 @@
+/* Mantine owns controls; application CSS owns page and card layout. */
+.ui-input, .ui-select, .ui-textarea { min-width: 0; width: 100%; }
+.ui-input input, .ui-select select, .ui-textarea textarea {
+  color: var(--text); background: var(--surface); border-color: var(--border-strong);
+  border-radius: var(--mantine-radius-md); font: inherit;
+}
+.ui-select select { padding-inline-start: 12px; padding-inline-end: 40px; text-overflow: ellipsis; }
+.ui-input input:focus, .ui-select select:focus, .ui-textarea textarea:focus { border-color: var(--accent); }
+.ui-input input:disabled, .ui-select select:disabled, .ui-textarea textarea:disabled { opacity: .6; cursor: not-allowed; }
+.ui-button { height: auto; min-height: 34px; padding: 7px 11px; border-radius: var(--mantine-radius-md); }
+.ui-button .mantine-Button-label { white-space: normal; overflow-wrap: anywhere; }
+.ui-button.primary { background: var(--accent); color: white; }
+.ui-button:disabled { opacity: .5; cursor: not-allowed; }
+.ui-check { flex: 0 0 auto; }
+.ui-check input { padding: 0; }
+.bookmark-search .ui-input input { padding-inline-end: 58px; }
+.dialog { color: var(--text); background: var(--surface); }
+.dialog .mantine-Modal-header { color: var(--text); background: var(--surface); }
+.dialog .mantine-Modal-title { font-size: 18px; font-weight: 700; }
+.dialog-body { padding: 4px 24px 24px; }
+.dialog-body footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.ui-toast { position: fixed; z-index: 400; right: 24px; bottom: 24px; max-width: min(460px, calc(100vw - 48px)); box-shadow: var(--mantine-shadow-md); }
+.batch-target .ui-select { width: 240px; }
+.form .ui-input input, .form .ui-select select, .form .ui-textarea textarea { width: 100%; }
+.ui-input input[type="color"] { padding: 4px; cursor: pointer; }
+.ui-input input:focus-visible, .ui-select select:focus-visible, .ui-textarea textarea:focus-visible, .ui-button:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 44%, transparent); outline-offset: 2px; }

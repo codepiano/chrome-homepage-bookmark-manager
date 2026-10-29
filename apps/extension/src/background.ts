@@ -1,3 +1,4 @@
+import { syncLibrary } from './offline';
 import { getConnection } from './api';
 
 type CaptureRecord = { url: string; title: string | null; folderId?: string };
@@ -51,7 +52,9 @@ async function sync() {
   if (syncing) return;
   syncing = true;
   try {
+    const state = await syncLibrary();
     await flushCaptureOutbox();
+    if (!state.offline) await refreshContextMenus();
   } finally { syncing = false; }
 }
 
@@ -104,10 +107,12 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 });
 chrome.runtime.onInstalled.addListener(() => { schedule(); void refreshContextMenus(); });
 chrome.runtime.onStartup.addListener(() => { schedule(); void refreshContextMenus(); });
-chrome.runtime.onMessage.addListener((message) => { if (message?.type === 'refresh-context-menus') void refreshContextMenus(); });
+chrome.runtime.onMessage.addListener((message) => { if (message?.type === 'sync-library') void sync(); if (message?.type === 'refresh-context-menus') void refreshContextMenus(); });
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) void sync(); });
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local' || (!changes.apiBaseUrl && !changes.token)) return;
+  if (area !== 'local') return;
+  if (changes.editableLibrary && !syncing && changes.editableLibrary.newValue?.queue?.length) void sync();
+  if (!changes.apiBaseUrl && !changes.token) return;
   void sync();
   void refreshContextMenus();
 });

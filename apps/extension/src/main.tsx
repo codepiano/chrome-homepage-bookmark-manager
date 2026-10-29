@@ -1,10 +1,11 @@
+import { OFFLINE_KEY, syncLibrary, type OfflineState } from './offline';
 import { displayTitle, displayHost, dateFormat, folderSubtreeIds, LINK_TREE_DRAG_TYPE } from './shared';
 import { StrictMode, Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
 import { SortableContext, arrayMove, horizontalListSortingStrategy, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { api, getLastGoodSnapshot, saveLastGoodSnapshot } from './api';
+import { api } from './api';
 import { buildSmartViews, type SmartView, type SmartViewId } from './smartViews';
 import { defaultSettings, type Folder, type Link, type LinkDraft, type Recommendation, type Settings } from './types';
 import '@mantine/core/styles.css';
@@ -59,7 +60,7 @@ function SmartViewCard({ link, folderName, settings, readOnly, onRecord, onRetry
 }
 
 function SmartViewPanel({ view, folders, settings, readOnly, onRecord, onRetry, onEdit, onMergeDuplicates, onOpenMaintenance }: { view: SmartView; folders: Folder[]; settings: Settings; readOnly: boolean; onRecord(link: Link): void; onRetry(link: Link): void; onEdit(link: Link): void; onMergeDuplicates(links: Link[]): void; onOpenMaintenance(): void }) {
-  return <div className="smart-view-panel"><div className="section-heading"><div><h2>{view.label}</h2><p>{view.links.length} 个链接 · {view.description}{readOnly ? ' · 离线快照只读' : ''}</p></div><div className="section-heading-actions">{view.id === 'duplicates' && view.links.length > 1 && !readOnly && <Button type="button" className="primary" onClick={() => onMergeDuplicates(view.links)}>合并重复项</Button>}{view.id === 'healthIssues' && !readOnly && <Button type="button" className="primary" onClick={onOpenMaintenance}>检查与修复</Button>}</div></div>{view.links.length ? <div className={`links ${settings.layout} columns-${settings.columnMode}`}>{view.links.map((link) => <SmartViewCard key={link.id} link={link} folderName={folders.find((folder) => folder.id === link.folderId)?.name ?? '未知标签'} settings={settings} readOnly={readOnly} onRecord={() => onRecord(link)} onRetry={() => onRetry(link)} onEdit={() => onEdit(link)} />)}</div> : <div className="smart-view-empty"><strong>这里暂时是空的</strong><p>{view.emptyMessage}</p></div>}</div>;
+  return <div className="smart-view-panel"><div className="section-heading"><div><h2>{view.label}</h2><p>{view.links.length} 个链接 · {view.description}{readOnly ? ' · 离线可编辑' : ''}</p></div><div className="section-heading-actions">{view.id === 'duplicates' && view.links.length > 1 && !readOnly && <Button type="button" className="primary" onClick={() => onMergeDuplicates(view.links)}>合并重复项</Button>}{view.id === 'healthIssues' && !readOnly && <Button type="button" className="primary" onClick={onOpenMaintenance}>检查与修复</Button>}</div></div>{view.links.length ? <div className={`links ${settings.layout} columns-${settings.columnMode}`}>{view.links.map((link) => <SmartViewCard key={link.id} link={link} folderName={folders.find((folder) => folder.id === link.folderId)?.name ?? '未知标签'} settings={settings} readOnly={readOnly} onRecord={() => onRecord(link)} onRetry={() => onRetry(link)} onEdit={() => onEdit(link)} />)}</div> : <div className="smart-view-empty"><strong>这里暂时是空的</strong><p>{view.emptyMessage}</p></div>}</div>;
 }
 
 function SortableTab({ folder, active, disabled = false, onSelect }: { folder: Folder; active: boolean; disabled?: boolean; onSelect(): void }) {
@@ -156,10 +157,10 @@ function App() {
   const [trashCount, setTrashCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [offlineSnapshot, setOfflineSnapshot] = useState(false);
+  const [pendingEdits, setPendingEdits] = useState(0);
   const [selectedLinkIds, setSelectedLinkIds] = useState<Set<string>>(() => new Set());
   const [batchTargetId, setBatchTargetId] = useState('');
   const [batchMoving, setBatchMoving] = useState(false);
-  const clickRetryQueue = useRef(new Set<string>());
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
   const selectedFolder = folders.find((folder) => folder.id === selectedFolderId) ?? null;
   const selectedFolderPath = useMemo(() => folderPath(folders, selectedFolderId), [folders, selectedFolderId]);
@@ -173,43 +174,48 @@ function App() {
 
   useEffect(() => { if (!toast) return; const timeout = window.setTimeout(() => { setToast(null); setUndoAction(null); }, 5200); return () => window.clearTimeout(timeout); }, [toast]);
   useEffect(() => { void chrome.storage.local.get([TAG_TREE_EXPANDED_KEY,TAG_VIEW_KEY]).then((value) => { const saved = value[TAG_TREE_EXPANDED_KEY]; setTreeExpandedIds(Array.isArray(saved) ? saved.filter((id): id is string => typeof id === 'string') : []); if(value[TAG_VIEW_KEY]==='tree'||value[TAG_VIEW_KEY]==='bar')setTagView(value[TAG_VIEW_KEY]); }).finally(() => setTreeStateReady(true)); }, []);
-  useEffect(() => { if (offlineSnapshot) setMode('browse'); }, [offlineSnapshot]);
   useEffect(() => { setSelectedLinkIds(new Set()); }, [selectedFolderId, smartViewId, mode]);
   useEffect(() => { if (!batchTargets.some((folder) => folder.id === batchTargetId)) setBatchTargetId(batchTargets[0]?.id ?? ''); }, [folders, batchTargetId]);
 
-  async function flushClickRetryQueue() {
-    await Promise.all([...clickRetryQueue.current].map(async (id) => { try { await api.click(id); clickRetryQueue.current.delete(id); } catch { /* Retry after the next successful load. */ } }));
-  }
   async function refreshTrashCount() { try { const trash = await api.trash(); setTrashCount(trash.folders.length + trash.links.length); } catch { /* Keep the last known count while offline. */ } }
-  async function load() {
-    setLoading(true); setError(null);
-    try {
-      const [nextFolders, nextSettings] = await Promise.all([api.folders(), api.settings()]);
-      const linksByFolder = Object.fromEntries(await Promise.all(nextFolders.map(async (folder) => [folder.id, await api.links(folder.id)] as const)));
-      setFolders(nextFolders); setSettings({ ...defaultSettings, ...nextSettings }); setLibraryLinks(linksByFolder);
-      setSelectedFolderId((current) => nextFolders.some((folder) => folder.id === current) ? current : nextFolders[0]?.id ?? null);
-      setLinks(linksByFolder[nextFolders.find((folder) => folder.id === selectedFolderId)?.id ?? nextFolders[0]?.id] ?? []);
-      setOfflineSnapshot(false); await saveLastGoodSnapshot({ folders: nextFolders, linksByFolder, settings: { ...defaultSettings, ...nextSettings } }); await flushClickRetryQueue();
-      void api.recommendations().then((result) => setRecommendations(result.recommendations)).catch(() => undefined);
-      void refreshTrashCount();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '无法连接本机服务');
-      const snapshot = await getLastGoodSnapshot();
-      if (snapshot) {
-        setFolders(snapshot.folders); setSettings({ ...defaultSettings, ...snapshot.settings }); setLibraryLinks(snapshot.linksByFolder);
-        setSelectedFolderId((current) => snapshot.folders.some((folder) => folder.id === current) ? current : snapshot.folders[0]?.id ?? null);
-        setLinks(snapshot.linksByFolder[snapshot.folders.find((folder) => folder.id === selectedFolderId)?.id ?? snapshot.folders[0]?.id] ?? []); setOfflineSnapshot(true);
-      }
-    } finally { setLoading(false); }
+  function applyLibraryState(state: OfflineState) {
+    const snapshot = state.snapshot;
+    setFolders(snapshot.folders); setSettings({ ...defaultSettings, ...snapshot.settings }); setLibraryLinks(snapshot.linksByFolder);
+    setSelectedFolderId(current => snapshot.folders.some(folder => folder.id === current) ? current : snapshot.folders[0]?.id ?? null);
+    setOfflineSnapshot(state.offline); setPendingEdits(state.queue.length); setError(state.error);
   }
-  useEffect(() => { void load(); }, []);
+  async function load() {
+    try {
+      const state = await syncLibrary();
+      applyLibraryState(state);
+      if (!state.offline) void api.recommendations().then(result => setRecommendations(result.recommendations)).catch(() => undefined);
+      void refreshTrashCount();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '无法读取本地书签'); }
+    finally { setLoading(false); }
+  }
   useEffect(() => {
-    if (!selectedFolderId) { setLinks([]); return; }
-    if (offlineSnapshot) { void getLastGoodSnapshot().then((snapshot) => setLinks(snapshot?.linksByFolder[selectedFolderId] ?? [])); return; }
-    api.links(selectedFolderId).then(setLinks).catch((cause) => setError(cause.message));
-  }, [selectedFolderId, offlineSnapshot]);
+    const changed = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
+      if (area === 'local' && changes[OFFLINE_KEY]?.newValue) applyLibraryState(changes[OFFLINE_KEY].newValue as OfflineState);
+    };
+    chrome.storage.onChanged.addListener(changed);
+    // Show persisted edits before checking the service, including after browser restart.
+    void chrome.storage.local.get([OFFLINE_KEY, 'lastGoodLibrarySnapshot']).then(values => {
+      const state = values[OFFLINE_KEY] as OfflineState | undefined;
+      if (state) { applyLibraryState(state); setLoading(false); }
+      else if (values.lastGoodLibrarySnapshot) {
+        const snapshot = values.lastGoodLibrarySnapshot;
+        setFolders(snapshot.folders); setSettings({ ...defaultSettings, ...snapshot.settings }); setLibraryLinks(snapshot.linksByFolder);
+        setSelectedFolderId(snapshot.folders[0]?.id ?? null); setLoading(false);
+      }
+    }).then(() => load());
+    const retry = () => { void load(); };
+    const interval = window.setInterval(retry, 15000);
+    window.addEventListener('online', retry);
+    return () => { chrome.storage.onChanged.removeListener(changed); window.clearInterval(interval); window.removeEventListener('online', retry); };
+  }, []);
+  useEffect(() => { setLinks(selectedFolderId ? libraryLinks[selectedFolderId] ?? [] : []); }, [selectedFolderId, libraryLinks]);
 
-  function recordLinkClick(link: Link) { void Promise.race([api.click(link.id), new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error('timeout')), 800))]).then(() => api.recommendations().then((result) => setRecommendations(result.recommendations))).catch(() => clickRetryQueue.current.add(link.id)); }
+  function recordLinkClick(link: Link) { void api.click(link.id).then(() => api.recommendations().then(result => setRecommendations(result.recommendations))).catch(() => undefined); }
   function openLink(link: Link) { recordLinkClick(link); window.location.assign(link.url); }
   function updateLibraryLink(next: Link, previousFolderId = next.folderId) {
     setLibraryLinks((current) => {
@@ -246,15 +252,9 @@ function App() {
     setBatchMoving(true); setError(null);
     try {
       const { moved } = await api.moveLinks(ids, batchTargetId);
-      setLinks((items) => items.filter((item) => !selectedLinkIds.has(item.id)));
-      setLibraryLinks((current) => ({
-        ...current,
-        ...(selectedFolderId ? { [selectedFolderId]: (current[selectedFolderId] ?? []).filter((item) => !selectedLinkIds.has(item.id)) } : {}),
-        [batchTargetId]: [...(current[batchTargetId] ?? []).filter((item) => !selectedLinkIds.has(item.id)), ...moved],
-      }));
-      setFolders((items) => items.map((folder) => folder.id === selectedFolderId ? { ...folder, linkCount: Math.max(0, (folder.linkCount ?? links.length) - moved.length) } : folder.id === batchTargetId ? { ...folder, linkCount: (folder.linkCount ?? 0) + moved.length } : folder));
       setSelectedLinkIds(new Set());
       setToast(`已将 ${moved.length} 个链接移动到“${folders.find((folder) => folder.id === batchTargetId)?.name ?? '目标标签'}”`);
+      await load();
     } catch (cause) { setError(`批量整理失败：${cause instanceof Error ? cause.message : '无法连接本机服务'}`); }
     finally { setBatchMoving(false); }
   }
@@ -282,33 +282,33 @@ function App() {
   function changeTagView(view:'bar'|'tree'){setTagView(view);void chrome.storage.local.set({[TAG_VIEW_KEY]:view});}
 
   const selectFolder = (id: string) => { setSmartViewId(null); setSelectedFolderId(id); };
-  const flatTabs = mode === 'organize' && !offlineSnapshot ? <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void reorderFolders(event)}><nav className="tabs organize-tabs" aria-label="书签标签"><SortableContext items={folders.map((folder) => folder.id)} strategy={horizontalListSortingStrategy}>{folders.map((folder) => <SortableTab key={folder.id} folder={folder} active={!smartViewId && folder.id === selectedFolderId} disabled={batchMoving} onSelect={() => selectFolder(folder.id)} />)}</SortableContext><Button className="tab-add" disabled={batchMoving} onClick={() => setDialog({ type: 'folder' })}>添加标签</Button></nav></DndContext> : <nav className="tabs" aria-label="书签标签">{folders.map((folder) => <div className="tab-wrap" key={folder.id}><Button className={`tab ${!smartViewId && folder.id === selectedFolderId ? 'active' : ''}`} onClick={() => selectFolder(folder.id)}>{folder.name}</Button></div>)}</nav>;
-  const tabs = !loading && treeStateReady && <><div className="tag-view-switch" aria-label="标签显示方式"><Button type="button" className={tagView === 'bar' ? 'active' : ''} aria-pressed={tagView === 'bar'} onClick={() => changeTagView('bar')}>横栏</Button><Button type="button" className={tagView === 'tree' ? 'active' : ''} aria-pressed={tagView === 'tree'} onClick={() => changeTagView('tree')}>树形</Button></div>{tagView === 'tree' ? <Suspense fallback={<p role="status">正在加载标签树…</p>}><TagTree folders={folders} selectedFolderId={selectedFolderId} side={settings.tagSidebarPosition} width={settings.tagSidebarWidth} expandedIds={treeExpandedIds} disabled={offlineSnapshot || batchMoving} onSelect={selectFolder} onAddChild={(parentId) => setDialog({ type: 'folder', parentId })} onManage={(id) => { const folder = folders.find((item) => item.id === id); if (folder) setDialog({ type: 'folder', folder }); }} onMoveLinks={(ids, folderId) => void moveLinksIntoFolder(ids, folderId)} onSideChange={(side) => { setSettings((current) => ({ ...current, tagSidebarPosition: side })); void api.updateSettings({ tagSidebarPosition: side }).catch(() => undefined); }} onWidthChange={(width) => { setSettings((current) => ({ ...current, tagSidebarWidth: width })); void api.updateSettings({ tagSidebarWidth: width }).catch(() => undefined); }} onExpandedChange={(ids) => { setTreeExpandedIds(ids); void chrome.storage.local.set({ [TAG_TREE_EXPANDED_KEY]: ids }); }} onChanged={() => void load()} /></Suspense> : flatTabs}</>;
+  const flatTabs = mode === 'organize' ? <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void reorderFolders(event)}><nav className="tabs organize-tabs" aria-label="书签标签"><SortableContext items={folders.map((folder) => folder.id)} strategy={horizontalListSortingStrategy}>{folders.map((folder) => <SortableTab key={folder.id} folder={folder} active={!smartViewId && folder.id === selectedFolderId} disabled={batchMoving} onSelect={() => selectFolder(folder.id)} />)}</SortableContext><Button className="tab-add" disabled={batchMoving} onClick={() => setDialog({ type: 'folder' })}>添加标签</Button></nav></DndContext> : <nav className="tabs" aria-label="书签标签">{folders.map((folder) => <div className="tab-wrap" key={folder.id}><Button className={`tab ${!smartViewId && folder.id === selectedFolderId ? 'active' : ''}`} onClick={() => selectFolder(folder.id)}>{folder.name}</Button></div>)}</nav>;
+  const tabs = !loading && treeStateReady && <><div className="tag-view-switch" aria-label="标签显示方式"><Button type="button" className={tagView === 'bar' ? 'active' : ''} aria-pressed={tagView === 'bar'} onClick={() => changeTagView('bar')}>横栏</Button><Button type="button" className={tagView === 'tree' ? 'active' : ''} aria-pressed={tagView === 'tree'} onClick={() => changeTagView('tree')}>树形</Button></div>{tagView === 'tree' ? <Suspense fallback={<p role="status">正在加载标签树…</p>}><TagTree folders={folders} selectedFolderId={selectedFolderId} side={settings.tagSidebarPosition} width={settings.tagSidebarWidth} expandedIds={treeExpandedIds} disabled={batchMoving} onSelect={selectFolder} onAddChild={(parentId) => setDialog({ type: 'folder', parentId })} onManage={(id) => { const folder = folders.find((item) => item.id === id); if (folder) setDialog({ type: 'folder', folder }); }} onMoveLinks={(ids, folderId) => void moveLinksIntoFolder(ids, folderId)} onSideChange={(side) => { setSettings((current) => ({ ...current, tagSidebarPosition: side })); void api.updateSettings({ tagSidebarPosition: side }).catch(() => undefined); }} onWidthChange={(width) => { setSettings((current) => ({ ...current, tagSidebarWidth: width })); void api.updateSettings({ tagSidebarWidth: width }).catch(() => undefined); }} onExpandedChange={(ids) => { setTreeExpandedIds(ids); void chrome.storage.local.set({ [TAG_TREE_EXPANDED_KEY]: ids }); }} onChanged={() => void load()} /></Suspense> : flatTabs}</>;
   const currentRecommendations = recommendations.filter((recommendation) => !links.some((link) => link.id === recommendation.id));
   const paletteCommands: PaletteCommand[] = [
-    ...(!offlineSnapshot ? [{ id:'new-root-folder', label:'新建一级标签', detail:'在标签树根级创建标签', keywords:'创建 文件夹', run:() => setDialog({ type:'folder', parentId:null }) }] : []),
-    ...(selectedFolder && !offlineSnapshot ? [{ id:'new-child-folder', label:`在“${selectedFolder.name}”下新建子标签`, detail:'创建当前标签的子级', keywords:'创建 子级', run:() => setDialog({ type:'folder', parentId:selectedFolder.id }) }] : []),
+    { id:'new-root-folder', label:'新建一级标签', detail:'在标签树根级创建标签', keywords:'创建 文件夹', run:() => setDialog({ type:'folder', parentId:null }) },
+    ...(selectedFolder ? [{ id:'new-child-folder', label:`在“${selectedFolder.name}”下新建子标签`, detail:'创建当前标签的子级', keywords:'创建 子级', run:() => setDialog({ type:'folder', parentId:selectedFolder.id }) }] : []),
     { id:'toggle-tag-view', label:tagView === 'tree' ? '切换到横栏标签' : '切换到树形标签', detail:'改变标签导航方式', keywords:'布局 视图', run:() => changeTagView(tagView === 'tree' ? 'bar' : 'tree') },
     ...(tagView === 'tree' ? [{ id:'move-tree-side', label:`将标签树移到${settings.tagSidebarPosition === 'left' ? '右侧' : '左侧'}`, detail:'切换侧栏位置', keywords:'左右 侧栏', run:() => { const side = settings.tagSidebarPosition === 'left' ? 'right' : 'left'; setSettings((current) => ({ ...current, tagSidebarPosition:side })); void api.updateSettings({ tagSidebarPosition:side }); } }] : []),
     ...(selectedFolder && folderSubtreeIds(folders, selectedFolder.id).some((id) => (libraryLinks[id] ?? []).length) ? [{ id:'batch-open', label:`批量打开“${selectedFolder.name}”`, detail:'选择当前标签或整个子树', keywords:'全部 子树 窗口', run:() => setDialog({ type:'batch-open', folder:selectedFolder }) }] : []),
-    ...(!offlineSnapshot ? [{ id:'toggle-organize', label:mode === 'organize' ? '完成整理' : '进入整理模式', detail:mode === 'organize' ? '返回快速打开模式' : '排序、移动和编辑链接', keywords:'管理 编辑', run:() => setMode(mode === 'organize' ? 'browse' : 'organize') }, { id:'maintenance', label:'检查链接状态', detail:'查找失效、暂不可达和永久重定向', keywords:'健康 坏链接 404 跳转', run:() => setDialog({ type:'maintenance' }) }, { id:'versions', label:'打开版本快照', detail:'创建或恢复本地书签库版本', keywords:'备份 快照 恢复', run:() => setDialog({ type:'versions' }) }, { id:'trash', label:'打开回收站', detail:trashCount ? `${trashCount} 项待恢复` : '回收站为空', keywords:'删除 恢复 撤销', run:() => setDialog({ type:'trash' }) }] : []),
+    ...([{ id:'toggle-organize', label:mode === 'organize' ? '完成整理' : '进入整理模式', detail:mode === 'organize' ? '返回快速打开模式' : '排序、移动和编辑链接', keywords:'管理 编辑', run:() => setMode(mode === 'organize' ? 'browse' : 'organize') }, { id:'maintenance', label:'检查链接状态', detail:'查找失效、暂不可达和永久重定向', keywords:'健康 坏链接 404 跳转', run:() => setDialog({ type:'maintenance' }) }, { id:'versions', label:'打开版本快照', detail:'创建或恢复本地书签库版本', keywords:'备份 快照 恢复', run:() => setDialog({ type:'versions' }) }, { id:'trash', label:'打开回收站', detail:trashCount ? `${trashCount} 项待恢复` : '回收站为空', keywords:'删除 恢复 撤销', run:() => setDialog({ type:'trash' }) }]),
     { id:'settings', label:'打开显示设置', detail:'主题、卡片和布局', keywords:'配置 外观', run:() => setDialog({ type:'settings' }) },
   ];
 
   return <AppProvider settings={settings}><main className={`app theme-${settings.theme} ${settings.compact ? 'compact' : ''} mode-${mode} ${tagView === 'tree' ? `tree-sidebar-${settings.tagSidebarPosition}` : ''}`} style={rootStyle}>
-    <header className="header"><h1>快速访问</h1><BookmarkSearch query={searchQuery} links={allLinks} folders={folders} commands={paletteCommands} onQueryChange={setSearchQuery} onOpen={openLink} onSelectFolder={(folder) => selectFolder(folder.id)} /><div className="header-actions"><Button className="quiet-button" disabled={batchMoving || offlineSnapshot} onClick={() => setDialog({ type: 'versions' })}>版本</Button><Button className="quiet-button" disabled={batchMoving || offlineSnapshot} onClick={() => setDialog({ type: 'trash' })}>回收站{trashCount ? ` ${trashCount}` : ''}</Button><Button className="quiet-button" disabled={batchMoving} onClick={() => setDialog({ type: 'settings' })}>设置</Button>{!offlineSnapshot && <Button className={mode === 'organize' ? 'primary' : 'quiet-button'} disabled={batchMoving} onClick={() => { setSmartViewId(null); setMode((current) => current === 'browse' ? 'organize' : 'browse'); }}>{mode === 'organize' ? '完成整理' : !smartViewId && isInbox && links.length ? '整理收集箱' : '整理书签'}</Button>}</div></header>
-    {error && <aside className="connection-error" role="alert"><span>无法连接本机服务：{error}{offlineSnapshot ? '。正在显示上次成功同步的只读快照。' : ''}</span><Button onClick={() => void load()}>重试</Button><Button onClick={() => setDialog({ type: 'connection' })}>检查连接</Button></aside>}
+    <header className="header"><h1>快速访问</h1><BookmarkSearch query={searchQuery} links={allLinks} folders={folders} commands={paletteCommands} onQueryChange={setSearchQuery} onOpen={openLink} onSelectFolder={(folder) => selectFolder(folder.id)} /><div className="header-actions"><Button className="quiet-button" disabled={batchMoving || offlineSnapshot} onClick={() => setDialog({ type: 'versions' })}>版本</Button><Button className="quiet-button" disabled={batchMoving} onClick={() => setDialog({ type: 'trash' })}>回收站{trashCount ? ` ${trashCount}` : ''}</Button><Button className="quiet-button" disabled={batchMoving} onClick={() => setDialog({ type: 'settings' })}>设置</Button>{<Button className={mode === 'organize' ? 'primary' : 'quiet-button'} disabled={batchMoving} onClick={() => { setSmartViewId(null); setMode((current) => current === 'browse' ? 'organize' : 'browse'); }}>{mode === 'organize' ? '完成整理' : !smartViewId && isInbox && links.length ? '整理收集箱' : '整理书签'}</Button>}</div></header>
+    {(error || pendingEdits > 0) && <aside className="connection-error" role={error ? 'alert' : 'status'}><span>{error ? '同步暂未完成。可继续编辑，恢复连接后自动同步。' : '修改已保存在此浏览器。'}{pendingEdits > 0 && ` ${pendingEdits} 项修改待同步。`}{error && `（${error}）`}</span><Button onClick={() => void load()}>{pendingEdits > 0 ? '立即同步' : '重试'}</Button>{error && <Button onClick={() => setDialog({ type: 'connection' })}>检查连接</Button>}</aside>}
     {tabs}
     {!loading && treeStateReady && <SmartViewBar views={smartViews} activeId={smartViewId} disabled={batchMoving} onSelect={(id) => { setSmartViewId(id); setMode('browse'); }} />}
     {!loading && treeStateReady && !activeSmartView && <PinnedStrip links={pinnedLinks} settings={settings} onOpen={recordLinkClick} />}
-    <section className="content" aria-busy={loading || !treeStateReady}>{loading || !treeStateReady ? <p className="state">正在连接本机书签库…</p> : activeSmartView ? <SmartViewPanel view={activeSmartView} folders={folders} settings={settings} readOnly={offlineSnapshot} onRecord={recordLinkClick} onRetry={(link) => void retryMetadata(link)} onEdit={(link) => setDialog({ type: 'link', link })} onMergeDuplicates={(items) => setDialog({ type:'merge-duplicates', links:items })} onOpenMaintenance={() => setDialog({ type:'maintenance' })} /> : !selectedFolder ? <Empty onAdd={() => setDialog({ type: 'folder' })} /> : <>
-      <div className="section-heading"><div><FolderBreadcrumb path={selectedFolderPath} onSelect={selectFolder} /><h2>{selectedFolder.name}</h2><p>{links.length} 个{isInbox ? '待整理' : '链接'}{offlineSnapshot ? ' · 离线快照只读' : mode === 'organize' ? isInbox ? ' · 选择后批量移动，也可逐项编辑' : tagView === 'tree' ? ' · 可排序，也可拖到标签树归类' : ' · 可拖动标签或链接排序' : isInbox ? ' · 点击“整理收集箱”开始归类' : ''}</p></div><div className="section-heading-actions"><Button className="text-button" disabled={batchMoving || !folderSubtreeIds(folders, selectedFolder.id).some((id) => (libraryLinks[id] ?? []).length)} onClick={() => setDialog({ type: 'batch-open', folder: selectedFolder })}>批量打开</Button>{!offlineSnapshot && <Button className="text-button" disabled={batchMoving} onClick={() => setDialog({ type: 'folder', folder: selectedFolder })}>管理此标签</Button>}</div></div>
-      {mode === 'organize' && !offlineSnapshot && isInbox && <BatchOrganizer selectedCount={selectedLinkIds.size} totalCount={links.length} targetFolderId={batchTargetId} folders={batchTargets} busy={batchMoving} onToggleAll={() => setSelectedLinkIds((current) => current.size === links.length ? new Set() : new Set(links.map((link) => link.id)))} onTargetChange={setBatchTargetId} onMove={() => void moveSelectedLinks()} onCreateFolder={() => setDialog({ type: 'folder' })} />}
-      {mode === 'organize' && !offlineSnapshot ? <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void reorderLinks(event)}><SortableContext items={links.map((link) => link.id)} strategy={rectSortingStrategy}><div className={`links ${settings.layout} columns-${settings.columnMode}`}>{links.map((link) => <SortableCard key={link.id} link={link} settings={settings} selectable={isInbox} selected={selectedLinkIds.has(link.id)} disabled={isInbox && batchMoving} treeMoveIds={tagView === 'tree' ? selectedLinkIds.has(link.id) && selectedLinkIds.size ? [...selectedLinkIds] : [link.id] : undefined} onToggle={() => toggleSelectedLink(link.id)} onOpen={() => openLink(link)} onEdit={() => setDialog({ type: 'link', link })} onPin={() => void togglePin(link)} />)}<AddCard folderName={selectedFolder.name} empty={links.length === 0} disabled={batchMoving} onClick={() => setDialog({ type: 'link' })} /></div></SortableContext></DndContext> : <><div className={`links ${settings.layout} columns-${settings.columnMode}`}>{links.map((link) => <BrowseCard key={link.id} link={link} settings={settings} onRecord={() => recordLinkClick(link)} onRetry={() => void retryMetadata(link)} />)}{!offlineSnapshot && <AddCard folderName={selectedFolder.name} empty={links.length === 0} onClick={() => setDialog({ type: 'link' })} />}</div>{!offlineSnapshot && settings.showRecommendations && <RecommendationStrip links={currentRecommendations} settings={settings} onOpen={recordLinkClick} />}</>}
+    <section className="content" aria-busy={loading || !treeStateReady}>{loading || !treeStateReady ? <p className="state">正在连接本机书签库…</p> : activeSmartView ? <SmartViewPanel view={activeSmartView} folders={folders} settings={settings} readOnly={false} onRecord={recordLinkClick} onRetry={(link) => void retryMetadata(link)} onEdit={(link) => setDialog({ type: 'link', link })} onMergeDuplicates={(items) => setDialog({ type:'merge-duplicates', links:items })} onOpenMaintenance={() => setDialog({ type:'maintenance' })} /> : !selectedFolder ? <Empty onAdd={() => setDialog({ type: 'folder' })} /> : <>
+      <div className="section-heading"><div><FolderBreadcrumb path={selectedFolderPath} onSelect={selectFolder} /><h2>{selectedFolder.name}</h2><p>{links.length} 个{isInbox ? '待整理' : '链接'}{offlineSnapshot ? ' · 离线可编辑' : mode === 'organize' ? isInbox ? ' · 选择后批量移动，也可逐项编辑' : tagView === 'tree' ? ' · 可排序，也可拖到标签树归类' : ' · 可拖动标签或链接排序' : isInbox ? ' · 点击“整理收集箱”开始归类' : ''}</p></div><div className="section-heading-actions"><Button className="text-button" disabled={batchMoving || !folderSubtreeIds(folders, selectedFolder.id).some((id) => (libraryLinks[id] ?? []).length)} onClick={() => setDialog({ type: 'batch-open', folder: selectedFolder })}>批量打开</Button>{<Button className="text-button" disabled={batchMoving} onClick={() => setDialog({ type: 'folder', folder: selectedFolder })}>管理此标签</Button>}</div></div>
+      {mode === 'organize' && isInbox && <BatchOrganizer selectedCount={selectedLinkIds.size} totalCount={links.length} targetFolderId={batchTargetId} folders={batchTargets} busy={batchMoving} onToggleAll={() => setSelectedLinkIds((current) => current.size === links.length ? new Set() : new Set(links.map((link) => link.id)))} onTargetChange={setBatchTargetId} onMove={() => void moveSelectedLinks()} onCreateFolder={() => setDialog({ type: 'folder' })} />}
+      {mode === 'organize' ? <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(event) => void reorderLinks(event)}><SortableContext items={links.map((link) => link.id)} strategy={rectSortingStrategy}><div className={`links ${settings.layout} columns-${settings.columnMode}`}>{links.map((link) => <SortableCard key={link.id} link={link} settings={settings} selectable={isInbox} selected={selectedLinkIds.has(link.id)} disabled={isInbox && batchMoving} treeMoveIds={tagView === 'tree' ? selectedLinkIds.has(link.id) && selectedLinkIds.size ? [...selectedLinkIds] : [link.id] : undefined} onToggle={() => toggleSelectedLink(link.id)} onOpen={() => openLink(link)} onEdit={() => setDialog({ type: 'link', link })} onPin={() => void togglePin(link)} />)}<AddCard folderName={selectedFolder.name} empty={links.length === 0} disabled={batchMoving} onClick={() => setDialog({ type: 'link' })} /></div></SortableContext></DndContext> : <><div className={`links ${settings.layout} columns-${settings.columnMode}`}>{links.map((link) => <BrowseCard key={link.id} link={link} settings={settings} onRecord={() => recordLinkClick(link)} onRetry={() => void retryMetadata(link)} />)}{<AddCard folderName={selectedFolder.name} empty={links.length === 0} onClick={() => setDialog({ type: 'link' })} />}</div>{!offlineSnapshot && settings.showRecommendations && <RecommendationStrip links={currentRecommendations} settings={settings} onOpen={recordLinkClick} />}</>}
     </>}</section>
     {toast && <Toast action={undoAction?.message === toast ? '撤销' : undefined} onAction={undoAction?.message === toast ? () => { void undoAction.run().catch((cause) => setError(`恢复失败：${cause instanceof Error ? cause.message : '无法连接本机服务'}`)); } : undefined}>{toast}</Toast>}
     <Suspense fallback={<p role="status">正在加载面板…</p>}>{dialog?.type === 'link' && (dialog.link?.folderId ?? selectedFolderId) && <LinkDialog link={dialog.link} initial={dialog.initial} initialDeleteArmed={dialog.deleteArmed} folderId={(dialog.link?.folderId ?? selectedFolderId)!} folders={folders} onClose={() => setDialog(null)} onSaved={(next) => { updateLibraryLink(next, dialog.link?.folderId); setLinks((items) => { const exists = items.some((item) => item.id === next.id); if (next.folderId !== selectedFolderId) return exists ? items.filter((item) => item.id !== next.id) : items; return exists ? items.map((item) => item.id === next.id ? next : item) : [...items, next]; }); setDialog(null); setToast(dialog.link ? '链接已更新' : '链接已添加'); }} onDeleted={(id, name) => { setLinks((items) => items.filter((item) => item.id !== id)); setLibraryLinks((current) => Object.fromEntries(Object.entries(current).map(([folderId, items]) => [folderId, items.filter((item) => item.id !== id)]))); setDialog(null); const message = `已将链接“${name}”移入回收站`; setToast(message); setUndoAction({ message, run: async () => { await api.restoreLink(id); setUndoAction(null); setToast(`已恢复链接“${name}”`); await load(); await refreshTrashCount(); } }); void refreshTrashCount(); }} />}
-    {dialog?.type === 'folder' && <FolderDialog folder={dialog.folder} parentId={dialog.parentId} linkCount={dialog.folder?.id === selectedFolderId ? links.length : dialog.folder?.linkCount ?? 0} onClose={() => setDialog(null)} onSaved={(next) => { setFolders((items) => dialog.folder ? items.map((item) => item.id === next.id ? next : item) : [...items, next]); refreshContextMenus(); setSelectedFolderId(next.id); setDialog(null); const moved = (next as Folder & { autoCollected?: number }).autoCollected ?? 0; setToast(dialog.folder ? moved ? `标签已更新，已自动归集 ${moved} 个链接` : '标签已更新' : '标签已添加'); if (!dialog.folder && dialog.parentId) void api.moveFolder(next.id, dialog.parentId, 0).finally(() => void load()); else void load(); }} onDeleted={(id, name) => { deleteFolder(id, name); refreshContextMenus(); }} />}
+    {dialog?.type === 'folder' && <FolderDialog folder={dialog.folder} parentId={dialog.parentId} linkCount={dialog.folder?.id === selectedFolderId ? links.length : dialog.folder?.linkCount ?? 0} onClose={() => setDialog(null)} onSaved={(next) => { setFolders((items) => items.some(item => item.id === next.id) ? items.map(item => item.id === next.id ? next : item) : [...items, next]); refreshContextMenus(); setSelectedFolderId(next.id); setDialog(null); const moved = (next as Folder & { autoCollected?: number }).autoCollected ?? 0; setToast(dialog.folder ? moved ? `标签已更新，已自动归集 ${moved} 个链接` : '标签已更新' : '标签已添加'); if (!dialog.folder && dialog.parentId) void api.moveFolder(next.id, dialog.parentId, 0).finally(() => void load()); else void load(); }} onDeleted={(id, name) => { deleteFolder(id, name); refreshContextMenus(); }} />}
     {dialog?.type === 'batch-open' && <BatchOpenDialog folder={dialog.folder} folders={folders} linksByFolder={libraryLinks} onClose={() => setDialog(null)} onOpen={(items, destination) => void openLinkBatch(items, destination)} />}
     {dialog?.type === 'merge-duplicates' && <DuplicateMergeDialog links={dialog.links} folders={folders} onClose={() => setDialog(null)} onMerged={async (count) => { setDialog(null); setToast(`已合并 ${count} 个重复链接，其余记录已进入回收站`); await load(); await refreshTrashCount(); }} />}
     {dialog?.type === 'maintenance' && <LinkMaintenanceDialog links={allLinks} folders={folders} onClose={() => setDialog(null)} onChanged={async () => { await load(); }} />}

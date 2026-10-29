@@ -1,3 +1,4 @@
+import { editLibrary, readLibrary, supportsOffline, syncLibrary } from './offline';
 import { settingsUpdate } from './settings';
 import type { BrowserHistoryPage, Folder, LibrarySnapshotVersion, Link, LinkAppearance, LinkDraft, Recommendation, Settings, TrashSnapshot } from './types';
 
@@ -9,7 +10,12 @@ export async function getConnection(): Promise<ConnectionPreferences> {
   const saved = await storage.get(defaultConnection);
   return { apiBaseUrl: String(saved.apiBaseUrl).replace(/\/$/, ''), token: String(saved.token) };
 }
-export async function saveConnection(value: ConnectionPreferences) { await storage.set(value); }
+export async function saveConnection(value: ConnectionPreferences) {
+  const saved = await storage.get('editableLibrary');
+  const state = saved.editableLibrary;
+  if (state?.queue?.length && state.source !== value.apiBaseUrl.replace(/\/$/, '')) throw new Error('还有未同步的修改，请先连接原服务完成同步，再切换服务地址');
+  await storage.set(value);
+}
 
 const SNAPSHOT_KEY = 'lastGoodLibrarySnapshot';
 export interface LibrarySnapshot {
@@ -27,11 +33,12 @@ export async function saveLastGoodSnapshot(snapshot: LibrarySnapshot) {
   await storage.set({ [SNAPSHOT_KEY]: snapshot });
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function rawRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const { apiBaseUrl, token } = await getConnection();
   const hasJsonBody = init?.body !== undefined && init.body !== null;
   const response = await fetch(`${apiBaseUrl}${path}`, {
     ...init,
+    signal: init?.signal ?? AbortSignal.timeout(5000),
     headers: { ...(hasJsonBody ? { 'content-type': 'application/json' } : {}), ...(token ? { authorization: `Bearer ${token}` } : {}), ...init?.headers },
   });
   if (!response.ok) {
@@ -43,6 +50,25 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(message);
   }
   return response.status === 204 ? (undefined as T) : response.json() as Promise<T>;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (supportsOffline(path, init?.method)) {
+    if (path === '/api/settings' && init?.body) {
+      const { updatedAt: _updatedAt, ...settings } = JSON.parse(String(init.body));
+      return editLibrary<T>(path, { ...init, body: JSON.stringify(settings) });
+    }
+    return editLibrary<T>(path, init!);
+  }
+  if (!init?.method || init.method === 'GET') {
+    const local = await readLibrary<T>(path);
+    if (local !== undefined) return local;
+  }
+  if (init?.method && init.method !== 'GET') {
+    const state = await syncLibrary();
+    if (state.offline) throw new Error('此功能需要连接本机服务；本地修改已保留');
+  }
+  return rawRequest<T>(path, init);
 }
 
 export const api = {

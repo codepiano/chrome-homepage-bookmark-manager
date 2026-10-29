@@ -1,3 +1,4 @@
+import { applyOfflineOperation, offlineEnvelope } from './offline.js';
 import Fastify from 'fastify';
 import { z } from 'zod';
 import type { Store } from './db.js';
@@ -140,6 +141,18 @@ export function createServer({ store, token }: ServerOptions) {
   });
   const notFound = (reply: { code: (n:number)=>{send:(value: unknown)=>unknown} }) => reply.code(404).send({ error:{ code:'not_found', message:'Resource not found' } });
   app.get('/health', async () => ({ status:'ok', protocolVersion:1 }));
+  app.post('/api/sync/operation', async request => {
+    const operation = parse(offlineEnvelope, request.body);
+    const result = store.applyOnce(operation.id, operation, () => applyOfflineOperation(store, operation, value => parse(settings, value)));
+    if (operation.entityId && /^\/api\/folders\/[^/]+\/links$/.test(operation.path)) {
+      const link = store.getLink(operation.entityId);
+      if (link?.metadataStatus === 'pending') {
+        if (/^https?:\/\//i.test(link.url)) refreshMetadata(store, link.id, link.url);
+        else store.setMetadata(link.id, { status: 'succeeded', error: null });
+      }
+    }
+    return result;
+  });
   app.get('/api/settings', async () => store.getSettings());
   app.put('/api/settings', async request => store.setSettings(parse(settings, request.body)));
   app.get('/api/snapshots', async () => store.listSnapshots());
